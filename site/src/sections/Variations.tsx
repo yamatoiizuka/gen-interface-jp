@@ -154,10 +154,10 @@ export function Variations() {
 
   const linkFile =
     mode === "all"
-      ? "all.css"
+      ? "cdn/all.css"
       : mode === "normal"
-        ? `${weight}.css`
-        : `display-${weight}.css`;
+        ? `cdn/${weight}.css`
+        : `cdn/display-${weight}.css`;
 
   // Selection-aware underline: hide the underline on `.bitmap-tool__cmd-link`
   // while it (or any part of it) is part of a non-collapsed selection so the

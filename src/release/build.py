@@ -12,9 +12,11 @@ The GitHub zip is the downloadable asset for users who want the TTFs to
 install or to feed into other tools (Illustrator / Figma desktop /
 bitmap converters). The npm directory is laid out so jsDelivr can serve
 /all.css and weight-specific CSS entrypoints directly from the package
-root. Full single-file WOFF2 is intentionally not redistributed — web
-delivery flows through the subset package, and self-hosters can convert
-TTF→WOFF2 trivially with fontTools or pyftsubset.
+root, plus cdn/*.css variants whose WOFF2 URLs are absolute jsDelivr
+URLs for direct CDN linking. Full single-file WOFF2 is intentionally
+not redistributed — web delivery flows through the subset package, and
+self-hosters can convert TTF→WOFF2 trivially with fontTools or
+pyftsubset.
 """
 
 from __future__ import annotations
@@ -36,6 +38,7 @@ DIST_TTF_PATH = Path(DIST_TTF)
 DEFAULT_WEBFONT_SOURCE = ROOT_PATH / "dist" / "webfont" / "gen-interface-jp"
 DEFAULT_RELEASE_DIR = ROOT_PATH / "dist" / "release"
 DEFAULT_REPOSITORY = "yamatoiizuka/gen-interface-jp"
+NPM_PACKAGE_NAME = "gen-interface-jp"
 INTER_OFL = ROOT_PATH / "vendor" / "fonts" / "Inter-4.1" / "LICENSE.txt"
 
 
@@ -148,15 +151,118 @@ def write_npm_license_files(out_dir: Path) -> None:
     (out_dir / "OFL.txt").write_text(ofl_text(), encoding="utf-8")
 
 
+def cdn_base_url(version: str) -> str:
+    return f"https://cdn.jsdelivr.net/npm/{NPM_PACKAGE_NAME}@{version}/"
+
+
+def css_with_cdn_urls(css: str, version: str) -> str:
+    return css.replace('url("./w/', f'url("{cdn_base_url(version)}w/')
+
+
+def write_cdn_css_files(out_dir: Path, version: str) -> list[Path]:
+    """Write CDN-specific CSS entrypoints next to the self-host CSS files.
+
+    The source CSS keeps relative `./w/...` URLs so npm installers and
+    self-hosters can copy the package anywhere. The CDN variants point
+    at the exact version on jsDelivr, matching the Google Fonts hosted
+    CSS shape and avoiding bad relative-URL resolution by crawlers.
+    """
+    written: list[Path] = []
+    cdn_dir = out_dir / "cdn"
+    if cdn_dir.exists():
+        shutil.rmtree(cdn_dir)
+    cdn_dir.mkdir(parents=True, exist_ok=True)
+    for source in sorted(out_dir.glob("*.css")):
+        target = cdn_dir / source.name
+        target.write_text(
+            css_with_cdn_urls(source.read_text(encoding="utf-8"), version),
+            encoding="utf-8",
+        )
+        written.append(target)
+    return written
+
+
+def write_npm_readme(out_dir: Path, version: str) -> None:
+    base_url = cdn_base_url(version)
+    content = f"""# Gen Interface JP
+
+Gen Interface JP is a Japanese/Latin UI typeface built from Inter and
+Noto Sans JP. This package contains unicode-range WOFF2 subsets for web
+use.
+
+## Which CSS Should I Use?
+
+Use the `cdn/*.css` files when linking directly from jsDelivr:
+
+```html
+<link rel="stylesheet" href="{base_url}cdn/400.css">
+<link rel="stylesheet" href="{base_url}cdn/display-800.css">
+```
+
+The CDN CSS files contain absolute WOFF2 URLs such as:
+
+```css
+src: url("{base_url}w/normal/400/000.woff2") format("woff2");
+```
+
+Use the plain `.css` files when installing from npm or self-hosting:
+
+```js
+import "gen-interface-jp/400.css";
+import "gen-interface-jp/display-800.css";
+```
+
+Plain CSS files keep relative WOFF2 URLs:
+
+```css
+src: url("./w/normal/400/000.woff2") format("woff2");
+```
+
+That relative form is correct for browsers and lets bundlers, local
+servers, and self-hosted deployments keep the CSS and `w/` directory
+together without depending on jsDelivr.
+
+## Entry Points
+
+- `all.css`: self-host all weights and both families.
+- `100.css` ... `800.css`: self-host Gen Interface JP.
+- `display-100.css` ... `display-800.css`: self-host Gen Interface JP Display.
+
+- `cdn/all.css`: jsDelivr all weights and both families.
+- `cdn/100.css` ... `cdn/800.css`: jsDelivr Gen Interface JP.
+- `cdn/display-100.css` ... `cdn/display-800.css`: jsDelivr Gen Interface JP Display.
+
+## Font Families
+
+```css
+body {{
+  font-family: "Gen Interface JP", sans-serif;
+}}
+
+h1 {{
+  font-family: "Gen Interface JP Display", sans-serif;
+}}
+```
+
+## License
+
+Generated fonts are licensed under the SIL Open Font License 1.1. See
+`OFL.txt`.
+"""
+    (out_dir / "README.md").write_text(content, encoding="utf-8")
+
+
 def write_npm_package(out_dir: Path, version: str, repository: str) -> None:
     package = {
-        "name": "gen-interface-jp",
+        "name": NPM_PACKAGE_NAME,
         "version": version,
         "description": "Gen Interface JP web font subsets",
         "style": "all.css",
         "files": [
             "*.css",
+            "cdn",
             "manifest.json",
+            "README.md",
             "OFL.txt",
             "w",
         ],
@@ -167,7 +273,10 @@ def write_npm_package(out_dir: Path, version: str, repository: str) -> None:
         "homepage": f"https://github.com/{repository}",
         "license": "OFL-1.1",
     }
-    (out_dir / "package.json").write_text(json.dumps(package, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    (out_dir / "package.json").write_text(
+        json.dumps(package, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
 
 def asset_filename(version: str) -> str:
@@ -222,9 +331,12 @@ def build_release(args: argparse.Namespace) -> dict:
     )
     source = args.webfont_source.resolve()
     copy_webfont_package(source, npm_dir, include_nam=False)
+    write_cdn_css_files(npm_dir, version)
     write_npm_license_files(npm_dir)
+    write_npm_readme(npm_dir, version)
     write_npm_package(npm_dir, version, args.repository)
     copy_webfont_package(source, webfont_out)
+    write_cdn_css_files(webfont_out, version)
 
     manifest = {
         "version": version,
@@ -234,7 +346,9 @@ def build_release(args: argparse.Namespace) -> dict:
         "webfonts": {
             "npmPackage": "npm",
             "npmAllCss": "npm/all.css",
+            "npmAllCdnCss": "npm/cdn/all.css",
             "staticAllCss": "webfonts/gen-interface-jp/all.css",
+            "staticAllCdnCss": "webfonts/gen-interface-jp/cdn/all.css",
         },
     }
     manifest_path = release_dir / "manifest.json"

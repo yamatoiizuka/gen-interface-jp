@@ -116,10 +116,14 @@ directory:
 ```text
 dist/release/npm/
   package.json
+  README.md
   OFL.txt
   all.css
   100.css ... 800.css
   display-100.css ... display-800.css
+  cdn/all.css
+  cdn/100.css ... cdn/800.css
+  cdn/display-100.css ... cdn/display-800.css
   w/normal/.../*.woff2
   w/display/.../*.woff2
 
@@ -128,6 +132,9 @@ dist/release/webfonts/
     all.css
     100.css ... 800.css
     display-100.css ... display-800.css
+    cdn/all.css
+    cdn/100.css ... cdn/800.css
+    cdn/display-100.css ... cdn/display-800.css
     w/normal/.../*.woff2
     w/display/.../*.woff2
 ```
@@ -142,10 +149,22 @@ the public directory. Example CSS path:
 Publishing `dist/release/npm/` to npm makes the jsDelivr URL:
 
 ```html
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/gen-interface-jp@latest/all.css">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/gen-interface-jp@latest/400.css">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/gen-interface-jp@latest/display-400.css">
+<link
+  rel="stylesheet"
+  href="https://cdn.jsdelivr.net/npm/gen-interface-jp@latest/cdn/all.css"
+/>
+<link
+  rel="stylesheet"
+  href="https://cdn.jsdelivr.net/npm/gen-interface-jp@latest/cdn/400.css"
+/>
+<link
+  rel="stylesheet"
+  href="https://cdn.jsdelivr.net/npm/gen-interface-jp@latest/cdn/display-400.css"
+/>
 ```
 
-The WOFF2 URLs inside the CSS are relative, so the CSS files and `w/` only need
-to stay together at the package root.
+The plain `.css` files keep relative WOFF2 URLs, so npm installs and
+self-hosted copies only need to keep the CSS files and `w/` together at the
+package root. The `cdn/*.css` files rewrite those WOFF2 URLs to absolute,
+version-pinned jsDelivr URLs for direct CDN linking and for crawlers that
+resolve CSS relative URLs incorrectly.

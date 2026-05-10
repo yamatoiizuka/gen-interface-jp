@@ -38,7 +38,7 @@ Web プロジェクトにおいて、head 内のスタイルシートの読み�
 <head>
   <link
     rel="stylesheet"
-    href="https://cdn.jsdelivr.net/npm/gen-interface-jp@latest/400.css"
+    href="https://cdn.jsdelivr.net/npm/gen-interface-jp@latest/cdn/400.css"
   />
 </head>
 ```
@@ -61,7 +61,7 @@ body {
 <head>
   <link
     rel="stylesheet"
-    href="https://cdn.jsdelivr.net/npm/gen-interface-jp@latest/display-800.css"
+    href="https://cdn.jsdelivr.net/npm/gen-interface-jp@latest/cdn/display-800.css"
   />
 </head>
 ```
@@ -80,6 +80,9 @@ h2 {
 - `all.css`: 全 16 ウェイトの CSS
 - `400.css`: Gen Interface JP Regular (400) の CSS
 - `display-400.css`: Gen Interface JP Display Regular (400) の CSS
+
+jsDelivr から直接読む場合は `cdn/*.css`、npm install 後やセルフホストでは
+相対 `./w/...` の WOFF2 参照を保つ通常の `.css` を使用してください。
 
 ## Repository
 

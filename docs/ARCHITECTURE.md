@@ -97,6 +97,7 @@ Read dist/ttf/{family}/{family}-{weight}.ttf
       .nam file → human-readable codepoint list
   → emit @font-face per slice with `unicode-range:` guard
   → write all.css (full family) + per-weight CSS files
+    using relative ./w/... WOFF2 URLs for npm/self-hosting
   → manifest.json with sizes / brotli sizes for benchmarking
 ```
 
@@ -105,8 +106,9 @@ Read dist/ttf/{family}/{family}-{weight}.ttf
 ```
 require dist/ttf/ + dist/webfont/gen-interface-jp/
   → zip GenInterfaceJP-<version>.zip (TTF, all weights × both families)
-  → copy webfont package → npm/      (with package.json)
+  → copy webfont package → npm/      (with package.json + README.md)
   → copy webfont package → webfonts/ (Pages-hosted mirror)
+  → add cdn/*.css entrypoints with version-pinned jsDelivr WOFF2 URLs
   → manifest.json with version, tag, asset URLs
 ```
 
@@ -276,6 +278,22 @@ dist/webfont/gen-interface-jp/
   manifest.json          # sizes / brotli sizes per slice
 ```
 
+These source webfont CSS files intentionally use relative `./w/...`
+WOFF2 URLs. `release.build` keeps them for npm installs and self-hosting,
+then writes `cdn/*.css` files whose WOFF2 URLs are absolute,
+version-pinned jsDelivr URLs:
+
+```
+dist/release/npm/
+  all.css
+  cdn/all.css
+  400.css
+  cdn/400.css
+  display-400.css
+  cdn/display-400.css
+  README.md              # documents CDN vs self-host entrypoints
+```
+
 `benchmark.mjs` (Node) replays a throttled fetch against the local
 subsets to validate the slicing pays off vs. a full single-file WOFF2.
 The benchmark generates the full WOFF2 from the Regular TTF on demand
@@ -294,11 +312,13 @@ Three downstream consumers, three outputs:
   flows through the npm subset package below; self-hosters can convert
   TTF→WOFF2 trivially with fontTools.
 - **npm package** (`dist/release/npm/`) — webfont subsets + a generated
-  `package.json` (name, version, files, OFL-1.1 license). jsDelivr serves
-  `all.css` and per-weight CSS from the package root.
+  `package.json` (name, version, files, OFL-1.1 license) and `README.md`.
+  Plain `all.css` / per-weight CSS use relative WOFF2 URLs for npm
+  installs and self-hosting. The `cdn/*.css` files use absolute,
+  version-pinned jsDelivr WOFF2 URLs for direct CDN linking.
 - **GitHub Pages mirror** (`dist/release/webfonts/gen-interface-jp/`) —
-  identical webfont package, served as static files alongside the demo
-  site.
+  static mirror of the webfont CSS / WOFF2 layout, served alongside the
+  demo site.
 
 Version is read from `pyproject.toml` (or `GITHUB_REF_NAME` in CI). The
 `manifest.json` next to the github / npm / webfonts dirs records release
@@ -309,6 +329,8 @@ URLs for downstream tooling.
 Vite static site under `site/`. Loads the published webfont package via
 jsDelivr's npm CDN at runtime — i.e. the live site uses the same npm
 artifact a third-party consumer would, exercising the package end-to-end.
+It uses the `cdn/*.css` entrypoints because the site links directly to
+jsDelivr.
 GitHub Pages deploys the build via `.github/workflows/pages.yml`.
 
 ## Tests
@@ -333,8 +355,8 @@ Tests live under `tests/`, split by surface:
   CFF rejection, LangSys index validity post-removal).
 - **`tests/test_release.py`** — public distribution contracts: GitHub
   asset URL shape (referenced by the site download button), npm package
-  layout including `files` glob and license metadata that jsDelivr /
-  `npm publish` consume.
+  layout including `files` glob, generated README, `cdn/*.css` entrypoints,
+  and license metadata that jsDelivr / `npm publish` consume.
 - **`tests/test_webfont_build.py`** — codepoint range merging, unicode-range
   formatting, JIS row → codepoint mapping, subset plan non-overlap +
   per-bucket placement, Google-Japanese strategy parsing including the
@@ -344,7 +366,7 @@ Tests live under `tests/`, split by surface:
 |---|---|---|
 | `test_font_build.py` | 55 | Glyph-name parsing, kana / CJK classification, GSUB walk, x-scale, bbox strip, tracking |
 | `test_proportional.py` | 19 | palt extraction, glyph translation, GPOS feature removal, three-bucket policy |
-| `test_release.py` | 2 | GitHub asset URL contract, npm package layout (files glob, license, CSS entrypoints at root) |
+| `test_release.py` | 2 | GitHub asset URL contract, npm package layout (files glob, license, README, self-host/CDN CSS entrypoints at root) |
 | `test_webfont_build.py` | 42 | Range merge / dedup, unicode-range formatting incl. 5-digit, JIS row mapping, subset plan placement / non-overlap / coverage, strategy parser edge cases |
 
 ## Commands
