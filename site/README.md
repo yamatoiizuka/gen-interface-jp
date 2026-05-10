@@ -7,7 +7,7 @@ the GitHub Release download entry point.
 The site loads the published web font CSS from npm through jsDelivr:
 
 ```html
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/gen-interface-jp@latest/all.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/gen-interface-jp@latest/cdn/all.css">
 ```
 
 Local `dist/ttf/` outputs are not required for site development or

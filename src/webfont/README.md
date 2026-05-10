@@ -59,21 +59,27 @@ subsets.
 
 ## Loading
 
-Subset delivery:
+For direct jsDelivr loading, use the `cdn/*.css` entrypoints emitted by
+the release package. They contain absolute WOFF2 URLs pinned to the
+package version:
 
 ```html
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/gen-interface-jp@latest/all.css">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/gen-interface-jp@latest/400.css">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/gen-interface-jp@latest/display-400.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/gen-interface-jp@latest/cdn/all.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/gen-interface-jp@latest/cdn/400.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/gen-interface-jp@latest/cdn/display-400.css">
 ```
+
+For npm installs and self-hosting, use the plain `.css` files. They keep
+relative `./w/...` URLs so the CSS and `w/` directory can be copied or
+bundled together without depending on jsDelivr.
 
 Do not preload individual subset WOFF2 files. That would bypass the
 `unicode-range` behavior that lets the browser fetch only the ranges used by
 the page text. If preloading is needed, preload the CSS only:
 
 ```html
-<link rel="preload" as="style" href="https://cdn.jsdelivr.net/npm/gen-interface-jp@latest/all.css">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/gen-interface-jp@latest/all.css">
+<link rel="preload" as="style" href="https://cdn.jsdelivr.net/npm/gen-interface-jp@latest/cdn/all.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/gen-interface-jp@latest/cdn/all.css">
 ```
 
 ## Benchmark

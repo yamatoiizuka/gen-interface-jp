@@ -37,7 +37,7 @@ With [subsetting similar to Google Fonts](https://developers.googleblog.com/goog
 <head>
   <link
     rel="stylesheet"
-    href="https://cdn.jsdelivr.net/npm/gen-interface-jp@latest/400.css"
+    href="https://cdn.jsdelivr.net/npm/gen-interface-jp@latest/cdn/400.css"
   />
 </head>
 ```
@@ -60,7 +60,7 @@ body {
 <head>
   <link
     rel="stylesheet"
-    href="https://cdn.jsdelivr.net/npm/gen-interface-jp@latest/display-800.css"
+    href="https://cdn.jsdelivr.net/npm/gen-interface-jp@latest/cdn/display-800.css"
   />
 </head>
 ```
@@ -79,6 +79,10 @@ h2 {
 - `all.css`: All 16 weights
 - `400.css`: Gen Interface JP Regular (400)
 - `display-400.css`: Gen Interface JP Display Regular (400)
+
+Use `cdn/*.css` files when linking directly from jsDelivr. Use plain `.css`
+files after npm install or when self-hosting so they keep relative `./w/...`
+WOFF2 references.
 
 ## Repository
 

@@ -99,6 +99,7 @@ dist/ttf/{family}/{family}-{weight}.ttf を読み込み
       .nam ファイル → 人間可読のコードポイント一覧
   → スライスごとに `unicode-range:` 付き @font-face を生成
   → all.css (フルファミリー) + ウェイト別 CSS を出力
+    npm / self-host 用に WOFF2 は相対 ./w/... URL で参照
   → manifest.json にサイズ / brotli サイズを記録
 ```
 
@@ -107,8 +108,9 @@ dist/ttf/{family}/{family}-{weight}.ttf を読み込み
 ```
 dist/ttf/ + dist/webfont/gen-interface-jp/ を要求
   → GenInterfaceJP-<version>.zip (TTF、全ウェイト × 両ファミリー)
-  → webfont package を npm/      にコピー (package.json 同梱)
+  → webfont package を npm/      にコピー (package.json + README.md 同梱)
   → webfont package を webfonts/ にコピー (Pages 配信用ミラー)
+  → バージョン固定の jsDelivr WOFF2 URL を持つ cdn/*.css を追加
   → manifest.json に version, tag, アセット URL を記録
 ```
 
@@ -272,6 +274,22 @@ dist/webfont/gen-interface-jp/
   manifest.json          # スライスごとのサイズ / brotli サイズ
 ```
 
+この段階の CSS は意図的に相対 `./w/...` の WOFF2 URL を使う。
+`release.build` は npm install 後やセルフホスト向けに通常の `.css` を残し、
+同時に WOFF2 URL をバージョン固定の jsDelivr 絶対 URL へ書き換えた
+`cdn/*.css` を出す:
+
+```
+dist/release/npm/
+  all.css
+  cdn/all.css
+  400.css
+  cdn/400.css
+  display-400.css
+  cdn/display-400.css
+  README.md              # CDN と self-host の使い分けを説明
+```
+
 `benchmark.mjs` (Node) はローカルサブセットに対する throttled fetch を
 再生し、スライス分割が単一フル WOFF2 比でペイするかを検証する。
 比較対象のフル WOFF2 は Regular TTF からオンデマンドで生成する
@@ -289,10 +307,12 @@ dist/webfont/gen-interface-jp/
   サブセット経由が本道、自前ホスティングする場合も TTF→WOFF2 変換は
   fontTools / pyftsubset で容易。
 - **npm パッケージ** (`dist/release/npm/`) — webfont サブセット +
-  自動生成された `package.json` (name, version, files, OFL-1.1 license)。
-  jsDelivr がパッケージのルートから `all.css` とウェイト別 CSS を配信する。
+  自動生成された `package.json` (name, version, files, OFL-1.1 license) と
+  `README.md`。通常の `all.css` / ウェイト別 CSS は npm install 後や
+  セルフホスト向けに相対 WOFF2 URL を使う。`cdn/*.css` は jsDelivr
+  直読み用に、バージョン固定の絶対 WOFF2 URL を使う。
 - **GitHub Pages ミラー** (`dist/release/webfonts/gen-interface-jp/`) —
-  npm と同じ webfont パッケージを、デモサイトの隣に静的ファイルとして配信。
+  webfont CSS / WOFF2 レイアウトの静的ミラーを、デモサイトの隣で配信。
 
 バージョンは `pyproject.toml` (CI では `GITHUB_REF_NAME`) から読む。
 github / npm / webfonts ディレクトリの隣にある `manifest.json` には
@@ -303,7 +323,8 @@ github / npm / webfonts ディレクトリの隣にある `manifest.json` には
 `site/` 配下の Vite 静的サイト。実行時に jsDelivr の npm CDN 経由で公開
 済み webfont パッケージをロードする — つまりライブサイトはサードパーティ
 コンシューマーが使うのと同じ npm 成果物を使い、エンドツーエンドでパッケージ
-の動作確認になる。GitHub Pages のデプロイは `.github/workflows/pages.yml`
+の動作確認になる。サイトは jsDelivr へ直接リンクするため `cdn/*.css` を使う。
+GitHub Pages のデプロイは `.github/workflows/pages.yml`
 で実行。
 
 ## テスト
@@ -328,7 +349,8 @@ PYTHONPATH=src python3 -m pytest        # 全テスト (~0.6 秒)
   feature 削除後の LangSys index 整合性)。
 - **`tests/test_release.py`** — 公開配布の契約: GitHub アセット URL の形
   (サイトのダウンロードボタンが参照)、npm パッケージのレイアウト
-  (`files` glob、`license` メタデータ、CSS エントリポイントの root 配置)。
+  (`files` glob、生成 README、`cdn/*.css` エントリポイント、`license`
+  メタデータ、CSS エントリポイントの root 配置)。
 - **`tests/test_webfont_build.py`** — コードポイント範囲のマージ、
   unicode-range のフォーマット (5 桁含む)、JIS 区 → コードポイント、
   サブセット計画の配置 / 非重複 / 完全カバレッジ、Google-Japanese
@@ -338,7 +360,7 @@ PYTHONPATH=src python3 -m pytest        # 全テスト (~0.6 秒)
 |---|---|---|
 | `test_font_build.py` | 55 | グリフ名パース、kana / CJK 分類、GSUB 走査、x-scale、bbox 除去、tracking |
 | `test_proportional.py` | 19 | palt 抽出、グリフ平行移動、GPOS feature 削除、3 バケット方針 |
-| `test_release.py` | 2 | GitHub アセット URL 契約、npm パッケージレイアウト (files glob、license、CSS root 配置) |
+| `test_release.py` | 2 | GitHub アセット URL 契約、npm パッケージレイアウト (files glob、license、README、self-host/CDN CSS root 配置) |
 | `test_webfont_build.py` | 42 | 範囲マージ / 重複除去、5 桁 hex 含む unicode-range、JIS 区マッピング、サブセット計画の配置 / 非重複 / 完全カバレッジ、ストラテジーパーサーのエッジケース |
 
 ## コマンド
