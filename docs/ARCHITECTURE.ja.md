@@ -23,8 +23,9 @@ Gen Interface JP はフォントビルドパイプライン (アプリ/UI なし
         │         metadataMode=inheritBase                │
         │             ↓                                   │
         │   [2/3] Proportionalise — proportional.py       │
-        │         palt → hmtx (3 バケット方針)              │
-        │         tracking + 極端な bbox の除去              │
+        │         palt → hmtx (2 バケット方針)              │
+        │         tracking (連続記号は除外)              │
+        │         + 極端な bbox の除去                    │
         │             ↓                                   │
         │   [3/3] Merge — font-baker                      │
         │         Inter (sub) + proportional Noto (base)  │
@@ -67,13 +68,14 @@ FAMILIES × WEIGHTS の各組合せに対して:
                     inheritBase で designer/OFL/version を継承
                     weight だけを上書き
   → inst を再読込し、キャッシュした variable から palt 取得
-  → グリフを kana letters / reduced palt / squeeze SB に分類
-    (CJK 漢字と vert-only グリフは除外)
+  → palt グリフを kana letters / reduced palt に分類
+    (CJK 漢字、vert-only グリフ、palt なしグリフはメトリクス維持)
   → make_proportional で palt → hmtx に焼き込み
     palt/vpal/halt/vhal 削除
   → _apply_tracking で advance を広げ LSB を半分シフト
+    ただし family["trackingIgnore"] の連続・隙間なし記号は除外
   → _apply_glyph_spacing で family["glyphSpacing"] の個別調整を適用
-  → _strip_extreme_glyphs で繰り返し記号 〱〲 を無効化
+  → _strip_extreme_glyphs で縦組み用繰り返し記号 〱-〵 を無効化
     (yMax > 1200 / yMin < -400)
   → font-baker merge: Inter + proportional Noto
                      subFont.excludeCodepoints = SUB_EXCLUDE_CODEPOINTS で
@@ -133,16 +135,25 @@ inst に対して 4 つのサブパスを in-place で実行:
 1. **palt のベイク** (`proportional.make_proportional`) — palt 値は
    キャッシュ済みの variable から読む (instantiation で非デフォルト軸位置の
    palt ValueRecord が壊れることがあるため)。XPlacement / XAdvance を
-   LSB / advance に加算しアウトラインをシフト。3 バケット:
+   LSB / advance に加算しアウトラインをシフト。palt は 2 バケット:
    - **kana letters** — palt 全量
    - **reduced palt** (句読点等、デフォルト ⅓) — palt 対象だが kana letter
      ではないグリフ
-   - **squeeze SB** — palt 非対象、非 kana、非 CJK、非 vertical なグリフ;
-     LSB と RSB をそれぞれ `1 - squeeze_sb_scale` 分縮める
-   CJK 漢字と `vert` / `vrt2` の代替グリフは除外 — 全角メトリクスを保つ。
+   palt なしグリフは自動的に sidebearing を詰めない; 後続の明示的な
+   spacing ルールが触らない限り元の `hmtx` を維持する。CJK 漢字と
+   `vert` / `vrt2` の代替グリフは reduced palt から除外 — 全角メトリクスを保つ。
 2. **トラッキング** (`_apply_tracking`) — advance を `tracking` 分広げ、
    `tracking // 2` を LSB に加算してアウトラインを広がった枠の中央に
    配置。kana / 句読点はファミリー設定の `trackingKana` で別値。
+   `trackingIgnore` はコードポイント / 範囲を受け取り、cmap で解決した
+   グリフを完全にスキップする。デフォルトでは Noto の tracking stage で
+   Box Drawing (`U+2500-U+257F`)、Block Elements (`U+2580-U+259F`)、
+   2 点 / 中点 leader (`U+2025`, `U+22EF`)、中黒 (`U+30FB`, `U+FF65`)、
+   `U+3030`、
+   縦組み・互換 leader 形式 (`U+FE19`, `U+FE30-U+FE34`,
+   `U+FE49-U+FE4F`)、two-/three-em dash (`U+2E3A`, `U+2E3B`)、全角
+   low line (`U+FF3F`)、全角 macron (`U+FFE3`) を除外し、隙間なしで
+   反復される記号のリズムを保つ。
 3. **個別グリフのスペーシング** (`_apply_glyph_spacing`) — palt + 一律
    トラッキングだけでは追い込めない稀なグリフのための手動レイヤー。
    ファミリー設定の `glyphSpacing` がコードポイント (または 1 文字) を
@@ -213,14 +224,21 @@ Inter の Latin 専用挙動 (各行のグリフに応じた行高動的調整) 
 
 ### 削除するグリフ
 
-`_strip_extreme_glyphs` は `yMax > 1200` または `yMin < -400` (em = 1000
-基準) のグリフを無効化する。Noto Sans JP では実質、縦組み用イテレーション
-マークと `vert` / `vrt2` 代替に限定される。
+`_strip_extreme_glyphs` は縦組み用イテレーションマーク `U+3031-U+3035`
+を明示的に無効化し、さらに `yMax > 1200` または `yMin < -400`
+(em = 1000 基準) のグリフも無効化する。Noto Sans JP で bbox の外れ値に
+なるのは全形の縦組み用イテレーションマークと `vert` / `vrt2` 代替。
+上半分/下半分の名残 (`〳〴〵`) は bbox としては外れ値ではないが、横組み
+テキスト内で Adobe の Japanese コンポーザーを混乱させるため、コードポイント
+指定で削除する。
 
 | Glyph | Codepoint | 削除理由 |
 |---|---|---|
 | `uni3031` 〱 | U+3031 | 縦組み用繰り返し記号 |
 | `uni3032` 〲 | U+3032 | 縦組み用濁点付き繰り返し記号 |
+| `uni3033` 〳 | U+3033 | 縦組み用繰り返し記号の上半分 |
+| `uni3034` 〴 | U+3034 | 縦組み用濁点付き繰り返し記号の上半分 |
+| `uni3035` 〵 | U+3035 | 縦組み用繰り返し記号の下半分 |
 | (vert alternate) | (unmapped) | `uni3031` の vert/vrt2 代替 |
 | (vert alternate) | (unmapped) | `uni3032` の vert/vrt2 代替 |
 
@@ -345,8 +363,9 @@ PYTHONPATH=src python3 -m pytest        # 全テスト (~0.6 秒)
   `_apply_tracking`, `_get_variable_palt`。
 - **`tests/test_proportional.py`** — `_read_palt`, `_shift_glyph_x`,
   `_remove_prop_features`, `make_proportional` (palt ベイク、reduced palt
-  scale、squeeze SB の sidebearing 計算、palt_override の優先、CFF 拒否、
-  feature 削除後の LangSys index 整合性)。
+  scale、palt なしグリフのメトリクス維持、オプションの squeeze SB
+  sidebearing 計算、palt_override の優先、CFF 拒否、feature 削除後の
+  LangSys index 整合性)。
 - **`tests/test_release.py`** — 公開配布の契約: GitHub アセット URL の形
   (サイトのダウンロードボタンが参照)、npm パッケージのレイアウト
   (`files` glob、生成 README、`cdn/*.css` エントリポイント、`license`
@@ -358,8 +377,8 @@ PYTHONPATH=src python3 -m pytest        # 全テスト (~0.6 秒)
 
 | ファイル | テスト数 | 検証内容 |
 |---|---|---|
-| `test_font_build.py` | 55 | グリフ名パース、kana / CJK 分類、GSUB 走査、x-scale、bbox 除去、tracking |
-| `test_proportional.py` | 19 | palt 抽出、グリフ平行移動、GPOS feature 削除、3 バケット方針 |
+| `test_font_build.py` | 76 | グリフ名パース、kana / CJK 分類、GSUB 走査、x-scale、bbox 除去、tracking |
+| `test_proportional.py` | 20 | palt 抽出、グリフ平行移動、GPOS feature 削除、2 バケット palt 方針 + optional squeeze helper |
 | `test_release.py` | 2 | GitHub アセット URL 契約、npm パッケージレイアウト (files glob、license、README、self-host/CDN CSS root 配置) |
 | `test_webfont_build.py` | 42 | 範囲マージ / 重複除去、5 桁 hex 含む unicode-range、JIS 区マッピング、サブセット計画の配置 / 非重複 / 完全カバレッジ、ストラテジーパーサーのエッジケース |
 

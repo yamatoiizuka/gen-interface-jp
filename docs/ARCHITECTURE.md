@@ -23,8 +23,9 @@ consumes the published webfont package.
         │         metadataMode=inheritBase                │
         │             ↓                                   │
         │   [2/3] Proportionalise — proportional.py       │
-        │         palt → hmtx (three-bucket policy)       │
-        │         tracking + strip extreme bbox           │
+        │         palt → hmtx (two-bucket policy)         │
+        │         tracking (with repeatable skips)        │
+        │         + strip extreme bbox                    │
         │             ↓                                   │
         │   [3/3] Merge — font-baker                      │
         │         Inter (sub) + proportional Noto (base)  │
@@ -67,12 +68,13 @@ For each (family, weight) in FAMILIES × WEIGHTS:
                     inheritBase passes designer/OFL/version
                     through; only weight is stamped
   → reload inst, read palt from cached variable font
-  → split glyphs into kana letters / reduced palt / squeeze SB
-    (CJK ideographs and vert-only glyphs excluded)
+  → split palt glyphs into kana letters / reduced palt
+    (CJK ideographs, vert-only glyphs, and non-palt glyphs keep metrics)
   → make_proportional bakes palt → hmtx, strips palt/vpal/halt/vhal
   → _apply_tracking widens advances + half-balances LSB
+    except repeatable no-gap symbols in family["trackingIgnore"]
   → _apply_glyph_spacing applies family["glyphSpacing"] sidebearing tweaks
-  → _strip_extreme_glyphs neutralises iteration marks 〱〲
+  → _strip_extreme_glyphs neutralises vertical iteration marks 〱-〵
     (yMax > 1200 / yMin < -400)
   → font-baker merge: Inter + proportional Noto
                      subFont.excludeCodepoints = SUB_EXCLUDE_CODEPOINTS
@@ -131,18 +133,26 @@ Four sub-passes, all in-place on the inst:
 1. **palt baking** (`proportional.make_proportional`) — palt values are
    read from the cached variable font (instantiation can corrupt palt's
    ValueRecords at non-default axis positions). XPlacement/XAdvance pairs
-   are added to LSB / advance, outlines shifted. Three buckets:
+   are added to LSB / advance, outlines shifted. Two palt buckets:
    - **kana letters** — full palt shrink
    - **reduced palt** (punctuation, by default ⅓ scale) — palt glyphs
      that aren't kana letters
-   - **squeeze SB** — non-palt, non-kana, non-CJK, non-vertical glyphs;
-     LSB and RSB each shrink by `1 - squeeze_sb_scale`
-   CJK ideographs and `vert`/`vrt2` alternates are excluded — they keep
-   full-width metrics.
+   Glyphs without palt entries are not automatically sidebearing-squeezed;
+   they keep their original `hmtx` unless a later explicit spacing rule
+   touches them. CJK ideographs and `vert`/`vrt2` alternates are excluded
+   from reduced palt — they keep full-width metrics.
 2. **Tracking** (`_apply_tracking`) — advance grows by `tracking`;
    `tracking // 2` is added to LSB so the outline sits centred in the
    wider slot. Kana / punctuation get a separate `trackingKana` value
-   when set on the family.
+   when set on the family. `trackingIgnore` accepts codepoints / ranges
+   and skips glyphs resolved through cmap. The default ignore list keeps
+   the Noto tracking stage from widening Box Drawing (`U+2500-U+257F`),
+   Block Elements (`U+2580-U+259F`), two-dot / midline leaders
+   (`U+2025`, `U+22EF`),
+   middle dots (`U+30FB`, `U+FF65`), `U+3030`, vertical/compat leader
+   forms (`U+FE19`, `U+FE30-U+FE34`, `U+FE49-U+FE4F`), two-/three-em
+   dashes (`U+2E3A`, `U+2E3B`), fullwidth low line (`U+FF3F`), and
+   fullwidth macron (`U+FFE3`).
 3. **Per-glyph spacing** (`_apply_glyph_spacing`) — manual fallback for
    the rare glyph whose sidebearings still read off after palt + uniform
    tracking. The family's `glyphSpacing` dict maps a codepoint or
@@ -216,14 +226,21 @@ of new text frames.
 
 ### Stripped glyphs
 
-`_strip_extreme_glyphs` neutralises any glyph with `yMax > 1200` or
-`yMin < -400` (em = 1000 baseline). In Noto Sans JP these are exclusively
-the vertical-text iteration marks and their `vert` / `vrt2` alternates.
+`_strip_extreme_glyphs` neutralises vertical-text iteration marks
+`U+3031-U+3035` explicitly, plus any glyph with `yMax > 1200` or
+`yMin < -400` (em = 1000 baseline). In Noto Sans JP the bbox outliers are
+the full vertical iteration marks and their `vert` / `vrt2` alternates;
+the upper/lower-half remnants (`〳〴〵`) are removed by codepoint because
+they are vertical-only and can confuse Adobe's Japanese composer in
+horizontal text.
 
 | Glyph | Codepoint | Reason |
 |---|---|---|
 | `uni3031` 〱 | U+3031 | Vertical kana repeat mark |
 | `uni3032` 〲 | U+3032 | Vertical voiced repeat mark |
+| `uni3033` 〳 | U+3033 | Vertical kana repeat mark upper half |
+| `uni3034` 〴 | U+3034 | Vertical voiced repeat mark upper half |
+| `uni3035` 〵 | U+3035 | Vertical kana repeat mark lower half |
 | (vert alternate) | (unmapped) | `uni3031` rotated form |
 | (vert alternate) | (unmapped) | `uni3032` rotated form |
 
@@ -351,8 +368,9 @@ Tests live under `tests/`, split by surface:
   `_apply_tracking`, `_get_variable_palt`.
 - **`tests/test_proportional.py`** — `_read_palt`, `_shift_glyph_x`,
   `_remove_prop_features`, `make_proportional` (palt baking, reduced
-  palt scaling, squeeze SB sidebearing math, palt_override precedence,
-  CFF rejection, LangSys index validity post-removal).
+  palt scaling, non-palt metric preservation, optional squeeze SB
+  sidebearing math, palt_override precedence, CFF rejection, LangSys
+  index validity post-removal).
 - **`tests/test_release.py`** — public distribution contracts: GitHub
   asset URL shape (referenced by the site download button), npm package
   layout including `files` glob, generated README, `cdn/*.css` entrypoints,
@@ -364,8 +382,8 @@ Tests live under `tests/`, split by surface:
 
 | File | Tests | Verifies |
 |---|---|---|
-| `test_font_build.py` | 55 | Glyph-name parsing, kana / CJK classification, GSUB walk, x-scale, bbox strip, tracking |
-| `test_proportional.py` | 19 | palt extraction, glyph translation, GPOS feature removal, three-bucket policy |
+| `test_font_build.py` | 76 | Glyph-name parsing, kana / CJK classification, GSUB walk, x-scale, bbox strip, tracking |
+| `test_proportional.py` | 20 | palt extraction, glyph translation, GPOS feature removal, two-bucket palt policy + optional squeeze helper |
 | `test_release.py` | 2 | GitHub asset URL contract, npm package layout (files glob, license, README, self-host/CDN CSS entrypoints at root) |
 | `test_webfont_build.py` | 42 | Range merge / dedup, unicode-range formatting incl. 5-digit, JIS row mapping, subset plan placement / non-overlap / coverage, strategy parser edge cases |
 

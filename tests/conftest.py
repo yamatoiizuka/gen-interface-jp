@@ -44,12 +44,13 @@ NOTO_VARIABLE_PATH = REPO / "vendor" / "fonts" / "Noto_Sans_JP" / "NotoSansJP-Va
 #   - CJK punctuation (U+3001 、, U+3002 。, U+30FB ・)
 #   - CJK ideographs (U+4E00 一, U+6F22 漢)
 #   - Latin (U+0041 A, U+0061 a)
-#   - Iteration marks (U+3031 〱, U+3032 〲) — extreme bbox
+#   - Vertical iteration marks (U+3031 〱 .. U+3035 〵)
 #   - CJK-symbol numerals (U+3038 〸) — _is_cjk_codepoint boundary case
 _TEST_CODEPOINTS = [
     0x0020, 0x0041, 0x0061,   # space, A, a
     0x3001, 0x3002, 0x3000,   # 、 。 ideographic space (CJK punct)
     0x3031, 0x3032,           # 〱 〲 iteration marks (extreme bbox)
+    0x3033, 0x3034, 0x3035,   # 〳 〴 〵 iteration remnants (non-extreme)
     0x3038,                   # 〸 CJK numerals (range 3038..303B)
     0x3042, 0x304B,           # あ か (hiragana letters)
     0x30A2, 0x30AB,           # ア カ (katakana letters)
@@ -104,8 +105,10 @@ def _build_synthetic_ttf() -> TTFont:
 
     Glyph repertoire:
         .notdef, A (Latin), uni3042 (kana), uni30A2 (kana), uni4E00 (CJK),
-        uni3001 (CJK punct), uni3031 (extreme-bbox iteration mark),
-        uni3031.vert (vert alternate, also extreme-bbox)
+        uni2500 (box drawing), uni3001 (CJK punct), uni3030 (wavy dash),
+        uni3031 (extreme-bbox iteration mark), uni3033/uni3034/uni3035
+        (vertical iteration remnants), uni30FB (middle dot), uni3031.vert
+        (vert alternate, also extreme-bbox)
 
     Each glyph carries a simple square outline at varying sizes so that
     advance widths, sidebearings, bbox extents, and composite handling
@@ -121,8 +124,14 @@ def _build_synthetic_ttf() -> TTFont:
         "uni3042",
         "uni30A2",
         "uni4E00",
+        "uni2500",
         "uni3001",
+        "uni3030",
         "uni3031",
+        "uni3033",
+        "uni3034",
+        "uni3035",
+        "uni30FB",
         "uni3031.vert",
         "compositeA",  # composite of "A" — for _shift_glyph_x composite branch
     ]
@@ -132,8 +141,14 @@ def _build_synthetic_ttf() -> TTFont:
         0x3042: "uni3042",
         0x30A2: "uni30A2",
         0x4E00: "uni4E00",
+        0x2500: "uni2500",
         0x3001: "uni3001",
+        0x3030: "uni3030",
         0x3031: "uni3031",
+        0x3033: "uni3033",
+        0x3034: "uni3034",
+        0x3035: "uni3035",
+        0x30FB: "uni30FB",
     })
 
     def _square(x_min: int, y_min: int, x_max: int, y_max: int) -> "Glyph":
@@ -151,9 +166,15 @@ def _build_synthetic_ttf() -> TTFont:
         "uni3042": _square(50, 0, 950, 800),
         "uni30A2": _square(50, 0, 950, 800),
         "uni4E00": _square(0, 0, 1000, 800),
+        "uni2500": _square(0, 390, 1000, 450),
         "uni3001": _square(50, 0, 450, 200),
+        "uni3030": _square(0, 360, 1000, 500),
         # yMax = 1500 → past _EXTREME_YMAX, will be stripped
         "uni3031": _square(50, -500, 950, 1500),
+        "uni3033": _square(180, -120, 700, 820),
+        "uni3034": _square(180, -120, 870, 820),
+        "uni3035": _square(190, -50, 750, 880),
+        "uni30FB": _square(400, 300, 600, 500),
         # vert alternate of 3031 — also extreme
         "uni3031.vert": _square(50, -500, 950, 1500),
     }
@@ -169,8 +190,14 @@ def _build_synthetic_ttf() -> TTFont:
         "uni3042": (1000, 50),
         "uni30A2": (1000, 50),
         "uni4E00": (1000, 0),
+        "uni2500": (1000, 0),
         "uni3001": (1000, 50),
+        "uni3030": (1000, 0),
         "uni3031": (1000, 50),
+        "uni3033": (1000, 180),
+        "uni3034": (1000, 180),
+        "uni3035": (1000, 190),
+        "uni30FB": (1000, 400),
         "uni3031.vert": (1000, 50),
         "compositeA": (600, 100),
     })

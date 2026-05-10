@@ -26,7 +26,7 @@ import os
 import sys
 
 from fontTools.ttLib import TTFont
-from merge_fonts import merge_fonts
+from merge_fonts import merge_fonts, parse_codepoint_list
 from .proportional import make_proportional
 
 
@@ -53,12 +53,33 @@ WEIGHTS = [
     (800, "ExtraBold",   900),
 ]
 
+# Noto-sourced glyphs that should keep their original advance during the
+# tracking pass. These characters are normally repeated or tiled, so adding
+# artificial sidebearings breaks the intended no-gap rhythm.
+TRACKING_IGNORE_CODEPOINTS = (
+    "U+2500-U+257F",   # Box Drawing
+    "U+2580-U+259F",   # Block Elements
+    "U+2025",          # ‥ TWO DOT LEADER
+    "U+22EF",          # ⋯ MIDLINE HORIZONTAL ELLIPSIS
+    "U+30FB",          # ・ KATAKANA MIDDLE DOT
+    "U+3030",          # 〰 WAVY DASH
+    "U+FE19",          # ︙ PRESENTATION FORM FOR VERTICAL HORIZONTAL ELLIPSIS
+    "U+FE30-U+FE34",   # ︰ ︱ ︲ ︳ ︴
+    "U+FE49-U+FE4F",   # ﹉ ﹊ ﹋ ﹌ ﹍ ﹎ ﹏
+    "U+FF65",          # ･ HALFWIDTH KATAKANA MIDDLE DOT
+    "U+2E3A",          # ⸺ TWO-EM DASH
+    "U+2E3B",          # ⸻ THREE-EM DASH
+    "U+FF3F",          # ＿ FULLWIDTH LOW LINE
+    "U+FFE3",          # ￣ FULLWIDTH MACRON
+)
+
 FAMILIES = {
     "normal": {
         "familyName": "Gen Interface JP",
         "interPrefix": "Inter",
         "tracking": 30,
         "trackingKana": 40,
+        "trackingIgnore": TRACKING_IGNORE_CODEPOINTS,
         "halfPaltPunct": True,
         "folderPrefix": "GenInterfaceJP",
         # Per-glyph sidebearing tweaks applied after tracking. Map a
@@ -75,6 +96,7 @@ FAMILIES = {
         "interPrefix": "InterDisplay",
         "tracking": 0,
         "trackingKana": 0,
+        "trackingIgnore": TRACKING_IGNORE_CODEPOINTS,
         "halfPaltPunct": True,
         "folderPrefix": "GenInterfaceJPDisplay",
         "glyphSpacing": {
@@ -415,17 +437,18 @@ def _scale_gpos_x(st, scale: float) -> None:
 # glyphs we want to neutralise.
 _EXTREME_YMAX = 1200
 _EXTREME_YMIN = -400
+_VERTICAL_REPEAT_MARK_CODEPOINTS = tuple(range(0x3031, 0x3036))
 
 
 def _strip_extreme_glyphs(font: TTFont) -> None:
-    """Neutralise glyphs whose bbox extends far beyond the em-square.
+    """Neutralise vertical-only repeat marks and bbox outliers.
 
-    Targets vertical-text-only glyphs (kana iteration marks 〱〲 and their
-    vert/vrt2 alternates) that inflate head.yMax/yMin. Illustrator's text
-    frame auto-sizing reads head bbox, so these outliers force frames to
-    open with several extra hundred units of vertical padding even on a
-    short string of plain Latin. Acceptable trade-off for a horizontal-only
-    UI font: vertical typesetting is out of scope (see CLAUDE.md).
+    Targets vertical-text-only glyphs (kana iteration marks 〱〲〳〴〵 and
+    their vert/vrt2 alternates). The extreme full-form glyphs inflate
+    head.yMax/yMin, and the upper/lower-half remnants can confuse Adobe's
+    Japanese composer when pasted into horizontal text. Acceptable trade-off
+    for a horizontal-only UI font: vertical typesetting is out of scope
+    (see CLAUDE.md).
 
     Removing the glyph slots outright would shift every later index in
     GSUB / GPOS lookups. Instead we keep the slot in place and only
@@ -438,6 +461,12 @@ def _strip_extreme_glyphs(font: TTFont) -> None:
     glyf = font["glyf"]
     hmtx = font["hmtx"]
     to_remove = set()
+    cmap = font.getBestCmap() or {}
+    to_remove.update(
+        glyph_name
+        for cp, glyph_name in cmap.items()
+        if cp in _VERTICAL_REPEAT_MARK_CODEPOINTS
+    )
     for gname in font.getGlyphOrder():
         g = glyf[gname]
         if g.numberOfContours == 0:
@@ -479,7 +508,29 @@ def _strip_extreme_glyphs(font: TTFont) -> None:
 # Tracking
 # ---------------------------------------------------------------------------
 
-def _apply_tracking(font: TTFont, tracking: int, tracking_kana: int | None = None) -> None:
+def _tracking_ignore_glyphs(
+    font: TTFont,
+    tracking_ignore: list | tuple | set | None,
+) -> set[str]:
+    """Resolve tracking-ignore codepoints to glyph names via cmap."""
+    if not tracking_ignore:
+        return set()
+    entries = (
+        tuple(tracking_ignore)
+        if isinstance(tracking_ignore, set)
+        else tracking_ignore
+    )
+    codepoints = parse_codepoint_list(entries)
+    cmap = font.getBestCmap() or {}
+    return {glyph_name for cp, glyph_name in cmap.items() if cp in codepoints}
+
+
+def _apply_tracking(
+    font: TTFont,
+    tracking: int,
+    tracking_kana: int | None = None,
+    tracking_ignore: list | tuple | set | None = None,
+) -> None:
     """Widen every glyph's advance width and split the gap evenly L/R.
 
     Adding tracking to a glyph means growing its advance by ``t`` and
@@ -497,11 +548,19 @@ def _apply_tracking(font: TTFont, tracking: int, tracking_kana: int | None = Non
     families use this to give kana and punctuation a slightly looser
     rhythm than Latin — kana need more breathing room at small sizes
     to remain legible against the denser Han ideographs.
+
+    *tracking_ignore* accepts the same codepoint entry forms as font-baker's
+    excludeCodepoints config (e.g. ``"U+2500-U+257F"`` or ``0x3030``).
+    Matching cmap glyphs are skipped entirely, preserving no-gap rhythm for
+    box drawing, block elements, leaders, and similar repeatable symbols.
     """
     hmtx = font["hmtx"]
+    ignore_glyphs = _tracking_ignore_glyphs(font, tracking_ignore)
     for glyph_name in font.getGlyphOrder():
         aw, lsb = hmtx[glyph_name]
         if aw == 0:
+            continue
+        if glyph_name in ignore_glyphs:
             continue
         t = tracking
         if tracking_kana is not None and _is_kana_or_punct(glyph_name):
@@ -641,6 +700,7 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
     # ── Step 2: Convert to proportional + apply tracking ──
     tracking = family["tracking"]
     tracking_kana = family["trackingKana"]
+    tracking_ignore = family.get("trackingIgnore")
     half_palt_punct = family.get("halfPaltPunct", False)
 
     desc = f"tracking +{tracking}"
@@ -658,19 +718,16 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
     # is canonical across all weights.
     palt_data = _get_variable_palt()
 
-    # Three-bucket policy for proportional metrics, only active when
+    # Two-bucket policy for proportional metrics, only active when
     # ``halfPaltPunct`` is set on the family:
     #   - kana letters: keep the full palt shrink (unchanged below)
     #   - reduced_palt: glyphs that have palt entries but aren't kana
     #     letters — typically punctuation. These get a fraction of the
     #     full palt shift so punctuation doesn't pull as tight as kana.
-    #   - squeeze_sb: glyphs without palt at all — non-kana, non-CJK,
-    #     non-vertical. We squeeze their sidebearings by the same ratio
-    #     so the rhythm stays consistent across the whole font.
-    # CJK ideographs and vertical-only glyphs are excluded from both
-    # buckets — they keep full-width metrics (see CLAUDE.md).
+    # Glyphs without palt entries keep their original hmtx. CJK ideographs
+    # and vertical-only glyphs are excluded from reduced_palt — they keep
+    # full-width metrics (see CLAUDE.md).
     reduced_palt_glyphs = None
-    squeeze_sb_glyphs = None
     if half_palt_punct:
         palt_glyphs = set(palt_data.keys())
         vert_glyphs = _get_vert_alternates(font)
@@ -680,20 +737,13 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
             g for g in palt_glyphs
             if not _is_kana_letter(g) and g not in exclude
         }
-        squeeze_sb_glyphs = {
-            g for g in font.getGlyphOrder()
-            if g not in palt_glyphs
-            and g not in exclude
-            and not _is_kana_letter(g)
-        }
 
     make_proportional(
         font,
         reduced_palt=reduced_palt_glyphs,
-        squeeze_sb=squeeze_sb_glyphs,
         palt_override=palt_data,
     )
-    _apply_tracking(font, tracking, tracking_kana)
+    _apply_tracking(font, tracking, tracking_kana, tracking_ignore)
     spacing_adjusted = _apply_glyph_spacing(font, family.get("glyphSpacing"))
     if spacing_adjusted:
         print(f"          Per-glyph spacing: {spacing_adjusted} glyph(s) adjusted")
