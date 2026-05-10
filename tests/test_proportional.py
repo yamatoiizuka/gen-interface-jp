@@ -214,6 +214,25 @@ class TestMakeProportional:
         after_aw = noto_subset["hmtx"][kana_glyph][0]
         assert after_aw == before_aw - 30
 
+    def test_non_palt_glyph_keeps_metrics_without_squeeze(self, noto_subset):
+        palt = _read_palt(noto_subset)
+        cmap = noto_subset.getBestCmap()
+        candidate = None
+        for cp in (0x0041, 0x0061, 0x4E00):  # A, a, 一
+            gname = cmap.get(cp)
+            if gname and gname not in palt:
+                candidate = gname
+                break
+        if candidate is None:
+            import pytest
+            pytest.skip("no non-palt glyph available")
+
+        before = noto_subset["hmtx"][candidate]
+
+        make_proportional(noto_subset)
+
+        assert noto_subset["hmtx"][candidate] == before
+
     def test_squeeze_sb_narrows_non_palt_glyph(self, noto_subset):
         # Pick a glyph that has no palt entry; verify sidebearings shrink.
         palt = _read_palt(noto_subset)

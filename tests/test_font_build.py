@@ -15,6 +15,7 @@ from font.build import (
     _apply_x_scale,
     _EXTREME_YMAX,
     _EXTREME_YMIN,
+    _VERTICAL_REPEAT_MARK_CODEPOINTS,
     _get_cjk_glyphs,
     _get_variable_palt,
     _get_vert_alternates,
@@ -24,6 +25,7 @@ from font.build import (
     _is_kana_or_punct,
     _strip_extreme_glyphs,
     SUB_EXCLUDE_CODEPOINTS,
+    TRACKING_IGNORE_CODEPOINTS,
 )
 from merge_fonts import parse_codepoint_list
 
@@ -167,7 +169,7 @@ class TestIsKanaLetter:
     def test_cjk_block_iteration_marks_excluded(self):
         # 〱 〲 (U+3031, U+3032) live in the CJK Symbols & Punctuation
         # block, not the kana blocks — _is_kana_letter excludes them so
-        # the squeeze pass can route them through vert-alternate handling.
+        # they do not receive full kana palt treatment.
         assert not _is_kana_letter("uni3031")
         assert not _is_kana_letter("uni3032")
 
@@ -331,6 +333,23 @@ class TestStripExtremeGlyphs:
 
         assert 0x3031 not in synthetic_ttf.getBestCmap()
 
+    def test_strips_vertical_repeat_remnants_even_when_not_extreme(self, synthetic_ttf):
+        before = synthetic_ttf.getBestCmap()
+        for cp in (0x3033, 0x3034, 0x3035):
+            assert cp in before
+            glyph = synthetic_ttf["glyf"][before[cp]]
+            assert glyph.yMax <= _EXTREME_YMAX
+            assert glyph.yMin >= _EXTREME_YMIN
+
+        _strip_extreme_glyphs(synthetic_ttf)
+
+        after = synthetic_ttf.getBestCmap()
+        for cp in (0x3033, 0x3034, 0x3035):
+            assert cp not in after
+            glyph = synthetic_ttf["glyf"][f"uni{cp:04X}"]
+            assert glyph.numberOfContours == 0
+            assert synthetic_ttf["hmtx"][f"uni{cp:04X}"] == (0, 0)
+
     def test_keeps_non_extreme_glyphs_intact(self, synthetic_ttf):
         before = synthetic_ttf["glyf"]["A"]
         before_contours = before.numberOfContours
@@ -344,6 +363,9 @@ class TestStripExtremeGlyphs:
         # If the constants drift, several call sites assume yMax=1200/yMin=-400.
         assert _EXTREME_YMAX == 1200
         assert _EXTREME_YMIN == -400
+
+    def test_vertical_repeat_mark_policy_matches_unicode_range(self):
+        assert _VERTICAL_REPEAT_MARK_CODEPOINTS == tuple(range(0x3031, 0x3036))
 
 
 # ---------------------------------------------------------------------------
@@ -454,6 +476,49 @@ class TestApplyTracking:
         assert after_aw == before_aw + 11
         # 11 // 2 = 5 (floor), so RSB ends up 6 wider, LSB 5 wider.
         assert after_lsb == before_lsb + 5
+
+    def test_tracking_ignore_skips_codepoint_ranges_and_singles(self, synthetic_ttf):
+        before_line = synthetic_ttf["hmtx"]["uni2500"]
+        before_wavy = synthetic_ttf["hmtx"]["uni3030"]
+        before_middle_dot = synthetic_ttf["hmtx"]["uni30FB"]
+        before_punct = synthetic_ttf["hmtx"]["uni3001"]
+
+        _apply_tracking(
+            synthetic_ttf,
+            tracking=30,
+            tracking_kana=60,
+            tracking_ignore=["U+2500-U+257F", "U+3030", "U+30FB"],
+        )
+
+        assert synthetic_ttf["hmtx"]["uni2500"] == before_line
+        assert synthetic_ttf["hmtx"]["uni3030"] == before_wavy
+        assert synthetic_ttf["hmtx"]["uni30FB"] == before_middle_dot
+        assert synthetic_ttf["hmtx"]["uni3001"][0] == before_punct[0] + 60
+
+    def test_default_tracking_ignore_policy_matches_repeatable_symbols(self):
+        codepoints = parse_codepoint_list(TRACKING_IGNORE_CODEPOINTS)
+
+        assert 0x2500 in codepoints  # ─
+        assert 0x257F in codepoints  # ╿
+        assert 0x2580 in codepoints  # ▀
+        assert 0x259F in codepoints  # ▟
+        assert 0x2025 in codepoints  # ‥
+        assert 0x22EF in codepoints  # ⋯
+        assert 0x30FB in codepoints  # ・
+        assert 0x3030 in codepoints  # 〰
+        assert 0xFE30 in codepoints  # ︰
+        assert 0xFE4F in codepoints  # ﹏
+        assert 0xFF65 in codepoints  # ･
+        assert 0x2E3A in codepoints  # ⸺
+        assert 0x2E3B in codepoints  # ⸻
+        assert 0xFF3F in codepoints  # ＿
+        assert 0xFFE3 in codepoints  # ￣
+
+        # From the earlier "confirm visually" group, only U+3030 is opted in.
+        assert 0x301C not in codepoints  # 〜
+        assert 0x30FC not in codepoints  # ー
+        assert 0xFF0D not in codepoints  # －
+        assert 0xFF1D not in codepoints  # ＝
 
 
 # ---------------------------------------------------------------------------
