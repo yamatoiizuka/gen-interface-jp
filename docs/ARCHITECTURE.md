@@ -23,7 +23,7 @@ consumes the published webfont package.
         │         metadataMode=inheritBase                │
         │             ↓                                   │
         │   [2/3] Proportionalise — proportional.py       │
-        │         palt → hmtx (two-bucket policy)         │
+        │         palt → hmtx (grouped palt policy)       │
         │         tracking (with repeatable skips)        │
         │         + strip extreme bbox                    │
         │             ↓                                   │
@@ -68,8 +68,8 @@ For each (family, weight) in FAMILIES × WEIGHTS:
                     inheritBase passes designer/OFL/version
                     through; only weight is stamped
   → reload inst, read palt from cached variable font
-  → split palt glyphs into kana letters / reduced palt
-    (CJK ideographs, vert-only glyphs, and non-palt glyphs keep metrics)
+  → bake every Noto palt entry at full strength
+    (glyphs without palt keep metrics)
   → make_proportional bakes palt → hmtx, strips palt/vpal/halt/vhal
   → _apply_tracking widens advances + half-balances LSB
     except repeatable no-gap symbols in family["trackingIgnore"]
@@ -133,14 +133,14 @@ Four sub-passes, all in-place on the inst:
 1. **palt baking** (`proportional.make_proportional`) — palt values are
    read from the cached variable font (instantiation can corrupt palt's
    ValueRecords at non-default axis positions). XPlacement/XAdvance pairs
-   are added to LSB / advance, outlines shifted. Two palt buckets:
-   - **kana letters** — full palt shrink
-   - **reduced palt** (punctuation, by default ⅓ scale) — palt glyphs
-     that aren't kana letters
-   Glyphs without palt entries are not automatically sidebearing-squeezed;
-   they keep their original `hmtx` unless a later explicit spacing rule
-   touches them. CJK ideographs and `vert`/`vrt2` alternates are excluded
-   from reduced palt — they keep full-width metrics.
+   are added to LSB / advance, outlines shifted. Every Noto palt entry is
+   baked at full strength; there is no separate tracking-only or full-palt
+   symbol list. Glyphs without palt entries are not automatically
+   sidebearing-squeezed; they keep their original `hmtx` unless a later
+   explicit spacing rule touches them.
+   `U+30FB` (・) is split from Noto's shared `uni2027` glyph before palt
+   baking so `U+2027` (‧) can remain palt + tracking only while `U+30FB`
+   receives explicit spacing compensation.
 2. **Tracking** (`_apply_tracking`) — advance grows by `tracking`;
    `tracking // 2` is added to LSB so the outline sits centred in the
    wider slot. Kana / punctuation get a separate `trackingKana` value
@@ -148,20 +148,23 @@ Four sub-passes, all in-place on the inst:
    and skips glyphs resolved through cmap. The default ignore list keeps
    the Noto tracking stage from widening Box Drawing (`U+2500-U+257F`),
    Block Elements (`U+2580-U+259F`), two-dot / midline leaders
-   (`U+2025`, `U+22EF`),
-   middle dots (`U+30FB`, `U+FF65`), `U+3030`, vertical/compat leader
+   (`U+2025`, `U+22EF`), halfwidth middle dot (`U+FF65`), `U+3030`,
+   vertical/compat leader
    forms (`U+FE19`, `U+FE30-U+FE34`, `U+FE49-U+FE4F`), two-/three-em
    dashes (`U+2E3A`, `U+2E3B`), fullwidth low line (`U+FF3F`), and
    fullwidth macron (`U+FFE3`).
 3. **Per-glyph spacing** (`_apply_glyph_spacing`) — manual fallback for
    the rare glyph whose sidebearings still read off after palt + uniform
    tracking. The family's `glyphSpacing` dict maps a codepoint or
-   character to a `(lsb_delta, rsb_delta)` pair: `lsb_delta` shifts the
-   outline right within the slot and grows advance by the same amount,
-   `rsb_delta` only grows advance on the right. Outline coordinates are
-   never touched. Populate sparingly — each entry hand-tuned for one
-   glyph against a specific neighbour rhythm. Refer to `FAMILIES` in
-   `font/build.py` for the current set of adjustments.
+   character to a `(lsb_delta, rsb_delta)` pair: `lsb_delta` increases
+   hmtx LSB and advance by the same amount, while `rsb_delta` only grows
+   advance on the right. Outline coordinates are never touched. Populate
+   sparingly — each entry hand-tuned for one glyph against a specific
+   neighbour rhythm. Refer to `FAMILIES` in `font/build.py` for the
+   current set of adjustments. `U+30FB` (・) is intentionally handled here
+   instead of `trackingIgnore`: it passes through tracking like other
+   adjusted punctuation, and Normal uses a family-specific spacing value so
+   the final hmtx matches the previous target.
 4. **Bbox strip** (`_strip_extreme_glyphs`) — see [Vertical metrics]
    below.
 
@@ -365,7 +368,9 @@ Tests live under `tests/`, split by surface:
 - **`tests/test_font_build.py`** — `_glyph_codepoint`, `_is_kana_or_punct`,
   `_is_cjk_codepoint`, `_is_kana_letter`, `_get_cjk_glyphs`,
   `_get_vert_alternates`, `_apply_x_scale`, `_strip_extreme_glyphs`,
-  `_apply_tracking`, `_get_variable_palt`.
+  `_apply_tracking`, `_apply_glyph_spacing`, `_glyphs_for_codepoints`,
+  `_split_cmap_codepoint_glyph`, `_get_variable_palt`, and the explicit
+  palt spacing policy.
 - **`tests/test_proportional.py`** — `_read_palt`, `_shift_glyph_x`,
   `_remove_prop_features`, `make_proportional` (palt baking, reduced
   palt scaling, non-palt metric preservation, optional squeeze SB
@@ -382,8 +387,8 @@ Tests live under `tests/`, split by surface:
 
 | File | Tests | Verifies |
 |---|---|---|
-| `test_font_build.py` | 76 | Glyph-name parsing, kana / CJK classification, GSUB walk, x-scale, bbox strip, tracking |
-| `test_proportional.py` | 20 | palt extraction, glyph translation, GPOS feature removal, two-bucket palt policy + optional squeeze helper |
+| `test_font_build.py` | 81 | Glyph-name parsing, kana / CJK classification, GSUB walk, x-scale, bbox strip, tracking |
+| `test_proportional.py` | 20 | palt extraction, glyph translation, GPOS feature removal, reduced-palt policy + optional squeeze helper |
 | `test_release.py` | 2 | GitHub asset URL contract, npm package layout (files glob, license, README, self-host/CDN CSS entrypoints at root) |
 | `test_webfont_build.py` | 42 | Range merge / dedup, unicode-range formatting incl. 5-digit, JIS row mapping, subset plan placement / non-overlap / coverage, strategy parser edge cases |
 

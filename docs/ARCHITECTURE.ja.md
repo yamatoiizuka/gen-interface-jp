@@ -23,7 +23,7 @@ Gen Interface JP はフォントビルドパイプライン (アプリ/UI なし
         │         metadataMode=inheritBase                │
         │             ↓                                   │
         │   [2/3] Proportionalise — proportional.py       │
-        │         palt → hmtx (2 バケット方針)              │
+        │         palt → hmtx (グループ別 palt 方針)        │
         │         tracking (連続記号は除外)              │
         │         + 極端な bbox の除去                    │
         │             ↓                                   │
@@ -68,8 +68,8 @@ FAMILIES × WEIGHTS の各組合せに対して:
                     inheritBase で designer/OFL/version を継承
                     weight だけを上書き
   → inst を再読込し、キャッシュした variable から palt 取得
-  → palt グリフを kana letters / reduced palt に分類
-    (CJK 漢字、vert-only グリフ、palt なしグリフはメトリクス維持)
+  → Noto の palt エントリを全量で焼き込み
+    (palt なしグリフはメトリクス維持)
   → make_proportional で palt → hmtx に焼き込み
     palt/vpal/halt/vhal 削除
   → _apply_tracking で advance を広げ LSB を半分シフト
@@ -135,21 +135,20 @@ inst に対して 4 つのサブパスを in-place で実行:
 1. **palt のベイク** (`proportional.make_proportional`) — palt 値は
    キャッシュ済みの variable から読む (instantiation で非デフォルト軸位置の
    palt ValueRecord が壊れることがあるため)。XPlacement / XAdvance を
-   LSB / advance に加算しアウトラインをシフト。palt は 2 バケット:
-   - **kana letters** — palt 全量
-   - **reduced palt** (句読点等、デフォルト ⅓) — palt 対象だが kana letter
-     ではないグリフ
-   palt なしグリフは自動的に sidebearing を詰めない; 後続の明示的な
-   spacing ルールが触らない限り元の `hmtx` を維持する。CJK 漢字と
-   `vert` / `vrt2` の代替グリフは reduced palt から除外 — 全角メトリクスを保つ。
+   LSB / advance に加算しアウトラインをシフト。Noto の palt エントリは
+   すべて全量で焼き込む; tracking-only / full-palt 記号リストのような
+   別分類は持たない。palt なしグリフは自動的に sidebearing を詰めない;
+   後続の明示的な spacing ルールが触らない限り元の `hmtx` を維持する。
+   `U+30FB` (・) は Noto では `U+2027` (‧) と同じ `uni2027` を共有して
+   いるため、palt ベイク前に `uni30FB` として分離する。これにより `‧` は
+   palt + tracking のみ、`・` は明示的な spacing 補正ありとして扱える。
 2. **トラッキング** (`_apply_tracking`) — advance を `tracking` 分広げ、
    `tracking // 2` を LSB に加算してアウトラインを広がった枠の中央に
    配置。kana / 句読点はファミリー設定の `trackingKana` で別値。
    `trackingIgnore` はコードポイント / 範囲を受け取り、cmap で解決した
    グリフを完全にスキップする。デフォルトでは Noto の tracking stage で
    Box Drawing (`U+2500-U+257F`)、Block Elements (`U+2580-U+259F`)、
-   2 点 / 中点 leader (`U+2025`, `U+22EF`)、中黒 (`U+30FB`, `U+FF65`)、
-   `U+3030`、
+   2 点 / 中点 leader (`U+2025`, `U+22EF`)、半角中黒 (`U+FF65`)、`U+3030`、
    縦組み・互換 leader 形式 (`U+FE19`, `U+FE30-U+FE34`,
    `U+FE49-U+FE4F`)、two-/three-em dash (`U+2E3A`, `U+2E3B`)、全角
    low line (`U+FF3F`)、全角 macron (`U+FFE3`) を除外し、隙間なしで
@@ -157,11 +156,14 @@ inst に対して 4 つのサブパスを in-place で実行:
 3. **個別グリフのスペーシング** (`_apply_glyph_spacing`) — palt + 一律
    トラッキングだけでは追い込めない稀なグリフのための手動レイヤー。
    ファミリー設定の `glyphSpacing` がコードポイント (または 1 文字) を
-   `(lsb_delta, rsb_delta)` ペアにマップする: `lsb_delta` はアウトラインを
-   スロット内で右にシフトしつつ advance を同量広げ、`rsb_delta` は
-   advance を右側だけ広げる。アウトライン座標は触らない。各エントリは
-   特定グリフを特定の隣接リズムに対して個別チューニングする想定なので、
-   慎重に追加すること。現在の調整値は `font/build.py` の `FAMILIES` を参照。
+   `(lsb_delta, rsb_delta)` ペアにマップする: `lsb_delta` は hmtx LSB と
+   advance を同量増やし、`rsb_delta` は advance を右側だけ広げる。
+   アウトライン座標は触らない。各エントリは特定グリフを特定の隣接リズムに
+   対して個別チューニングする想定なので、慎重に追加すること。現在の調整値は
+   `font/build.py` の `FAMILIES` を参照。`U+30FB` (・) は `trackingIgnore`
+   ではなくここで扱う: 他の調整対象の句読点と同じく tracking を通し、
+   Normal family では family-specific な spacing 値で最終 hmtx を従来の
+   目標に合わせる。
 4. **bbox 除去** (`_strip_extreme_glyphs`) — 下記 [垂直メトリクス] 参照。
 
 オプションの **横スケール** (`xScale` 設定、現在未使用) は上記の後に
@@ -360,7 +362,9 @@ PYTHONPATH=src python3 -m pytest        # 全テスト (~0.6 秒)
 - **`tests/test_font_build.py`** — `_glyph_codepoint`, `_is_kana_or_punct`,
   `_is_cjk_codepoint`, `_is_kana_letter`, `_get_cjk_glyphs`,
   `_get_vert_alternates`, `_apply_x_scale`, `_strip_extreme_glyphs`,
-  `_apply_tracking`, `_get_variable_palt`。
+  `_apply_tracking`, `_apply_glyph_spacing`, `_glyphs_for_codepoints`,
+  `_split_cmap_codepoint_glyph`, `_get_variable_palt`、明示的な palt
+  spacing 方針。
 - **`tests/test_proportional.py`** — `_read_palt`, `_shift_glyph_x`,
   `_remove_prop_features`, `make_proportional` (palt ベイク、reduced palt
   scale、palt なしグリフのメトリクス維持、オプションの squeeze SB
@@ -377,8 +381,8 @@ PYTHONPATH=src python3 -m pytest        # 全テスト (~0.6 秒)
 
 | ファイル | テスト数 | 検証内容 |
 |---|---|---|
-| `test_font_build.py` | 76 | グリフ名パース、kana / CJK 分類、GSUB 走査、x-scale、bbox 除去、tracking |
-| `test_proportional.py` | 20 | palt 抽出、グリフ平行移動、GPOS feature 削除、2 バケット palt 方針 + optional squeeze helper |
+| `test_font_build.py` | 81 | グリフ名パース、kana / CJK 分類、GSUB 走査、x-scale、bbox 除去、tracking |
+| `test_proportional.py` | 20 | palt 抽出、グリフ平行移動、GPOS feature 削除、reduced-palt 方針 + optional squeeze helper |
 | `test_release.py` | 2 | GitHub アセット URL 契約、npm パッケージレイアウト (files glob、license、README、self-host/CDN CSS root 配置) |
 | `test_webfont_build.py` | 42 | 範囲マージ / 重複除去、5 桁 hex 含む unicode-range、JIS 区マッピング、サブセット計画の配置 / 非重複 / 完全カバレッジ、ストラテジーパーサーのエッジケース |
 

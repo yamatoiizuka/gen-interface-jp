@@ -22,6 +22,7 @@ TTF outputs — see src/webfont/.
 
 from __future__ import annotations
 
+import copy
 import os
 import sys
 
@@ -61,7 +62,6 @@ TRACKING_IGNORE_CODEPOINTS = (
     "U+2580-U+259F",   # Block Elements
     "U+2025",          # ‥ TWO DOT LEADER
     "U+22EF",          # ⋯ MIDLINE HORIZONTAL ELLIPSIS
-    "U+30FB",          # ・ KATAKANA MIDDLE DOT
     "U+3030",          # 〰 WAVY DASH
     "U+FE19",          # ︙ PRESENTATION FORM FOR VERTICAL HORIZONTAL ELLIPSIS
     "U+FE30-U+FE34",   # ︰ ︱ ︲ ︳ ︴
@@ -73,14 +73,80 @@ TRACKING_IGNORE_CODEPOINTS = (
     "U+FFE3",          # ￣ FULLWIDTH MACRON
 )
 
+# Glyphs listed here get full Noto palt like every other palt glyph, then
+# receive explicit hmtx spacing after tracking. The values are derived from
+# the canonical Noto palt records so that:
+#
+#   full palt + tracking + glyphSpacing == previous reduced-palt output
+#
+# for advance and hmtx LSB. This keeps the current visual rhythm for the
+# more spacing-sensitive punctuation while letting the pipeline express the
+# policy as "full palt, then explicit spacing compensation".
+PALT_SPACE_ADJUSTMENTS = {
+    "、": (6, 327),
+    "。": (-7, 340),
+    "，": (43, 290),
+    "．": (53, 280),
+    "〈": (317, 16),
+    "〉": (17, 316),
+    "《": (320, 13),
+    "》": (13, 320),
+    "「": (321, 12),
+    "」": (13, 320),
+    "『": (321, 12),
+    "』": (13, 320),
+    "【": (317, 16),
+    "】": (16, 317),
+    "〔": (314, 19),
+    "〕": (19, 314),
+    "〖": (333, 0),
+    "〗": (0, 333),
+    "〘": (320, 13),
+    "〙": (13, 320),
+    "〚": (333, 0),
+    "〛": (0, 333),
+    "（": (309, 24),
+    "）": (24, 309),
+    "｛": (320, 13),
+    "｝": (13, 320),
+    "｟": (315, 18),
+    "｠": (19, 314),
+    "〝": (312, 21),
+    "〞": (0, 333),
+    "〟": (21, 312),
+    "［": (321, 12),
+    "］": (13, 320),
+    "！": (167, 166),
+    "？": (89, 100),
+    "・": (167, 166),
+    "：": (167, 166),
+    "；": (167, 166),
+}
+
+
+NORMAL_TRACKING = 30
+NORMAL_TRACKING_KANA = 40
+DISPLAY_TRACKING = 0
+DISPLAY_TRACKING_KANA = 0
+
+NORMAL_PALT_SPACE_ADJUSTMENTS = {
+    **PALT_SPACE_ADJUSTMENTS,
+    # U+30FB used to skip tracking in the legacy pipeline. It now passes
+    # through tracking like the other Group A symbols, so Normal uses a
+    # family-specific spacing value to keep the same final hmtx target.
+    "・": (147, 146),
+}
+
+DISPLAY_PALT_SPACE_ADJUSTMENTS = PALT_SPACE_ADJUSTMENTS
+
+
 FAMILIES = {
     "normal": {
         "familyName": "Gen Interface JP",
         "interPrefix": "Inter",
-        "tracking": 30,
-        "trackingKana": 40,
+        "tracking": NORMAL_TRACKING,
+        "trackingKana": NORMAL_TRACKING_KANA,
         "trackingIgnore": TRACKING_IGNORE_CODEPOINTS,
-        "halfPaltPunct": True,
         "folderPrefix": "GenInterfaceJP",
         # Per-glyph sidebearing tweaks applied after tracking. Map a
         # codepoint (int) or single-char string to a (lsb_delta, rsb_delta)
@@ -88,18 +154,19 @@ FAMILIES = {
         # tighten. Populate when a specific glyph needs a manual margin
         # nudge that palt + tracking alone can't reach.
         "glyphSpacing": {
+            **NORMAL_PALT_SPACE_ADJUSTMENTS,
             "く": (30, 0),
         },
     },
     "display": {
         "familyName": "Gen Interface JP Display",
         "interPrefix": "InterDisplay",
-        "tracking": 0,
-        "trackingKana": 0,
+        "tracking": DISPLAY_TRACKING,
+        "trackingKana": DISPLAY_TRACKING_KANA,
         "trackingIgnore": TRACKING_IGNORE_CODEPOINTS,
-        "halfPaltPunct": True,
         "folderPrefix": "GenInterfaceJPDisplay",
         "glyphSpacing": {
+            **DISPLAY_PALT_SPACE_ADJUSTMENTS,
             "く": (30, 0),
         },
     },
@@ -300,12 +367,46 @@ def _get_cjk_glyphs(font: TTFont) -> set[str]:
     return {gname for cp, gname in cmap.items() if _is_cjk_codepoint(cp)}
 
 
+def _split_cmap_codepoint_glyph(
+    font: TTFont,
+    codepoint: int,
+    new_glyph_name: str,
+) -> str | None:
+    """Give one cmap codepoint its own glyph copy when it shares a glyph.
+
+    Noto maps both U+2027 (‧) and U+30FB (・) to ``uni2027``. The spacing
+    policy treats them differently, so U+30FB needs an independent hmtx/glyf
+    record before palt and manual spacing are applied. The source glyph name
+    is returned so callers can copy palt override data when needed.
+    """
+    cmap = font.getBestCmap() or {}
+    source_glyph = cmap.get(codepoint)
+    if source_glyph is None:
+        return None
+    if source_glyph == new_glyph_name:
+        return source_glyph
+
+    glyph_order = font.getGlyphOrder()
+    if new_glyph_name not in glyph_order:
+        font.setGlyphOrder([*glyph_order, new_glyph_name])
+        font["glyf"][new_glyph_name] = copy.deepcopy(font["glyf"][source_glyph])
+        font["hmtx"].metrics[new_glyph_name] = font["hmtx"].metrics[source_glyph]
+        if "vmtx" in font and source_glyph in font["vmtx"].metrics:
+            font["vmtx"].metrics[new_glyph_name] = font["vmtx"].metrics[source_glyph]
+
+    for table in font["cmap"].tables:
+        if table.cmap.get(codepoint) == source_glyph:
+            table.cmap[codepoint] = new_glyph_name
+
+    return source_glyph
+
+
 def _is_kana_letter(glyph_name: str) -> bool:
     """Return True for hiragana / katakana *letters*, excluding punctuation.
 
-    Stricter than :func:`_is_kana_or_punct`: the kana proportional pass
-    keeps full palt shrink on letters (where palt's optical kerning is
-    designed to apply) and applies a reduced palt to punctuation.
+    Stricter than :func:`_is_kana_or_punct`: this helper answers whether a
+    glyph is an actual kana letter rather than CJK punctuation or fullwidth
+    symbols.
     Notable exclusion: U+30FB (・) is punctuation, not a letter.
     """
     cp = _glyph_codepoint(glyph_name)
@@ -448,7 +549,7 @@ def _strip_extreme_glyphs(font: TTFont) -> None:
     head.yMax/yMin, and the upper/lower-half remnants can confuse Adobe's
     Japanese composer when pasted into horizontal text. Acceptable trade-off
     for a horizontal-only UI font: vertical typesetting is out of scope
-    (see CLAUDE.md).
+    (see docs/ARCHITECTURE.md).
 
     Removing the glyph slots outright would shift every later index in
     GSUB / GPOS lookups. Instead we keep the slot in place and only
@@ -508,21 +609,29 @@ def _strip_extreme_glyphs(font: TTFont) -> None:
 # Tracking
 # ---------------------------------------------------------------------------
 
+def _glyphs_for_codepoints(
+    font: TTFont,
+    codepoint_entries: list | tuple | set | None,
+) -> set[str]:
+    """Resolve codepoint entries to glyph names via cmap."""
+    if not codepoint_entries:
+        return set()
+    entries = (
+        tuple(codepoint_entries)
+        if isinstance(codepoint_entries, set)
+        else codepoint_entries
+    )
+    codepoints = parse_codepoint_list(entries)
+    cmap = font.getBestCmap() or {}
+    return {glyph_name for cp, glyph_name in cmap.items() if cp in codepoints}
+
+
 def _tracking_ignore_glyphs(
     font: TTFont,
     tracking_ignore: list | tuple | set | None,
 ) -> set[str]:
     """Resolve tracking-ignore codepoints to glyph names via cmap."""
-    if not tracking_ignore:
-        return set()
-    entries = (
-        tuple(tracking_ignore)
-        if isinstance(tracking_ignore, set)
-        else tracking_ignore
-    )
-    codepoints = parse_codepoint_list(entries)
-    cmap = font.getBestCmap() or {}
-    return {glyph_name for cp, glyph_name in cmap.items() if cp in codepoints}
+    return _glyphs_for_codepoints(font, tracking_ignore)
 
 
 def _apply_tracking(
@@ -701,46 +810,32 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
     tracking = family["tracking"]
     tracking_kana = family["trackingKana"]
     tracking_ignore = family.get("trackingIgnore")
-    half_palt_punct = family.get("halfPaltPunct", False)
 
     desc = f"tracking +{tracking}"
     if tracking_kana is not None:
         desc += f" (kana/punct +{tracking_kana})"
-    if half_palt_punct:
-        desc += " (punct half-palt)"
     print(f"    [2/3] Proportional (palt) + {desc}...")
 
     font = TTFont(inst_path)
+
+    # Split U+30FB from U+2027 before metrics work. Noto maps both to
+    # ``uni2027``, but U+30FB has an explicit spacing adjustment while
+    # U+2027 only needs palt + tracking.
+    split_source = _split_cmap_codepoint_glyph(font, 0x30FB, "uni30FB")
 
     # Read palt from the variable source rather than the freshly-baked inst:
     # variable instantiation can leave palt ValueRecords with zeroed or
     # otherwise stale XPlacement/XAdvance pairs. The cached variable read
     # is canonical across all weights.
-    palt_data = _get_variable_palt()
+    palt_data = dict(_get_variable_palt())
+    if split_source in palt_data:
+        palt_data["uni30FB"] = palt_data[split_source]
 
-    # Two-bucket policy for proportional metrics, only active when
-    # ``halfPaltPunct`` is set on the family:
-    #   - kana letters: keep the full palt shrink (unchanged below)
-    #   - reduced_palt: glyphs that have palt entries but aren't kana
-    #     letters — typically punctuation. These get a fraction of the
-    #     full palt shift so punctuation doesn't pull as tight as kana.
-    # Glyphs without palt entries keep their original hmtx. CJK ideographs
-    # and vertical-only glyphs are excluded from reduced_palt — they keep
-    # full-width metrics (see CLAUDE.md).
-    reduced_palt_glyphs = None
-    if half_palt_punct:
-        palt_glyphs = set(palt_data.keys())
-        vert_glyphs = _get_vert_alternates(font)
-        cjk_glyphs = _get_cjk_glyphs(font)
-        exclude = vert_glyphs | cjk_glyphs
-        reduced_palt_glyphs = {
-            g for g in palt_glyphs
-            if not _is_kana_letter(g) and g not in exclude
-        }
-
+    # Bake every Noto palt entry at full strength. Glyphs without palt keep
+    # their original hmtx; selected punctuation is adjusted later by
+    # glyphSpacing.
     make_proportional(
         font,
-        reduced_palt=reduced_palt_glyphs,
         palt_override=palt_data,
     )
     _apply_tracking(font, tracking, tracking_kana, tracking_ignore)

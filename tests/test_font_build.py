@@ -19,11 +19,16 @@ from font.build import (
     _get_cjk_glyphs,
     _get_variable_palt,
     _get_vert_alternates,
+    _glyphs_for_codepoints,
     _glyph_codepoint,
     _is_cjk_codepoint,
     _is_kana_letter,
     _is_kana_or_punct,
+    _split_cmap_codepoint_glyph,
     _strip_extreme_glyphs,
+    DISPLAY_PALT_SPACE_ADJUSTMENTS,
+    NORMAL_PALT_SPACE_ADJUSTMENTS,
+    PALT_SPACE_ADJUSTMENTS,
     SUB_EXCLUDE_CODEPOINTS,
     TRACKING_IGNORE_CODEPOINTS,
 )
@@ -504,7 +509,6 @@ class TestApplyTracking:
         assert 0x259F in codepoints  # ▟
         assert 0x2025 in codepoints  # ‥
         assert 0x22EF in codepoints  # ⋯
-        assert 0x30FB in codepoints  # ・
         assert 0x3030 in codepoints  # 〰
         assert 0xFE30 in codepoints  # ︰
         assert 0xFE4F in codepoints  # ﹏
@@ -514,11 +518,81 @@ class TestApplyTracking:
         assert 0xFF3F in codepoints  # ＿
         assert 0xFFE3 in codepoints  # ￣
 
+        # U+30FB belongs to the palt + spacing group, so it receives tracking
+        # and is corrected later by glyphSpacing.
+        assert 0x30FB not in codepoints  # ・
+
         # From the earlier "confirm visually" group, only U+3030 is opted in.
         assert 0x301C not in codepoints  # 〜
         assert 0x30FC not in codepoints  # ー
         assert 0xFF0D not in codepoints  # －
         assert 0xFF1D not in codepoints  # ＝
+
+
+# ---------------------------------------------------------------------------
+# palt symbol policy
+# ---------------------------------------------------------------------------
+
+class TestPaltSymbolPolicy:
+    """Full palt is the default; spacing values mark the adjusted symbols."""
+
+    def test_tracking_only_symbols_are_implicit_palt_entries(self):
+        palt = _get_variable_palt()
+
+        for glyph_name in (
+            "uni3012", "uni3005", "uni3006",
+            "uniFF10", "uniFF19", "uniFF21", "uniFF2C",
+            "uniFF2E", "uniFF3A", "uniFF41", "uniFF56",
+            "uniFF58", "uniFF5A", "uniFF3E",
+            "uniFFE5", "uni2027", "uni2035",
+        ):
+            assert glyph_name in palt
+
+        assert "〒" not in PALT_SPACE_ADJUSTMENTS
+        assert "０" not in PALT_SPACE_ADJUSTMENTS
+        assert "Ａ" not in PALT_SPACE_ADJUSTMENTS
+        assert "‧" not in PALT_SPACE_ADJUSTMENTS
+
+        assert "uniFF2D" not in palt  # Ｍ
+        assert "uniFF57" not in palt  # ｗ
+        assert "uniFF40" not in palt  # ｀
+
+    def test_palt_spacing_adjustments_preserve_previous_metrics(self):
+        assert PALT_SPACE_ADJUSTMENTS["、"] == (6, 327)
+        assert PALT_SPACE_ADJUSTMENTS["〈"] == (317, 16)
+        assert PALT_SPACE_ADJUSTMENTS["！"] == (167, 166)
+        assert PALT_SPACE_ADJUSTMENTS["？"] == (89, 100)
+        assert PALT_SPACE_ADJUSTMENTS["・"] == (167, 166)
+
+    def test_family_spacing_adjustments_handle_middle_dot_tracking(self):
+        assert DISPLAY_PALT_SPACE_ADJUSTMENTS["・"] == (167, 166)
+        assert NORMAL_PALT_SPACE_ADJUSTMENTS["・"] == (147, 146)
+
+    def test_codepoint_entries_resolve_to_glyphs(self, synthetic_ttf):
+        glyphs = _glyphs_for_codepoints(
+            synthetic_ttf,
+            (0x2500, "U+3033-U+3035"),
+        )
+
+        assert glyphs == {"uni2500", "uni3033", "uni3034", "uni3035"}
+
+    def test_middle_dot_can_split_from_shared_noto_glyph(self, synthetic_ttf):
+        synthetic_ttf.setGlyphOrder([*synthetic_ttf.getGlyphOrder(), "uni2027"])
+        synthetic_ttf["glyf"]["uni2027"] = copy.deepcopy(synthetic_ttf["glyf"]["uni30FB"])
+        synthetic_ttf["hmtx"].metrics["uni2027"] = synthetic_ttf["hmtx"]["uni30FB"]
+        for table in synthetic_ttf["cmap"].tables:
+            table.cmap[0x2027] = "uni2027"
+            table.cmap[0x30FB] = "uni2027"
+        before_hmtx = synthetic_ttf["hmtx"]["uni2027"]
+
+        split_source = _split_cmap_codepoint_glyph(synthetic_ttf, 0x30FB, "uni30FB")
+
+        cmap = synthetic_ttf.getBestCmap()
+        assert split_source == "uni2027"
+        assert cmap[0x2027] == "uni2027"
+        assert cmap[0x30FB] == "uni30FB"
+        assert synthetic_ttf["hmtx"]["uni30FB"] == before_hmtx
+        assert synthetic_ttf["hmtx"]["uni2027"] == before_hmtx
 
 
 # ---------------------------------------------------------------------------
