@@ -161,10 +161,15 @@ Four sub-passes, all in-place on the inst:
    advance on the right. Outline coordinates are never touched. Populate
    sparingly — each entry hand-tuned for one glyph against a specific
    neighbour rhythm. Refer to `FAMILIES` in `font/build.py` for the
-   current set of adjustments. `U+30FB` (・) is intentionally handled here
-   instead of `trackingIgnore`: it passes through tracking like other
-   adjusted punctuation, and Normal uses a family-specific spacing value so
-   the final hmtx matches the previous target.
+   current set of adjustments. Small hiragana / katakana use this layer to
+   add explicit margin on both sides after palt, because the small forms
+   otherwise read too tight in UI text; most small kana use 15 units per
+   side, with a few optical exceptions such as small katakana i (`ィ`),
+   small katakana ya (`ャ`), and small hiragana yo (`ょ`). `U+30FB` (・) is
+   intentionally handled here instead of `trackingIgnore`: it passes
+   through tracking like other adjusted punctuation, and Normal uses a
+   family-specific spacing value so the final hmtx matches the previous
+   target.
 4. **Bbox strip** (`_strip_extreme_glyphs`) — see [Vertical metrics]
    below.
 
