@@ -557,12 +557,19 @@ class TestPaltSymbolPolicy:
         assert "uniFF57" not in palt  # ｗ
         assert "uniFF40" not in palt  # ｀
 
-    def test_palt_spacing_adjustments_preserve_previous_metrics(self):
-        assert PALT_SPACE_ADJUSTMENTS["、"] == (6, 327)
+    def test_palt_spacing_adjustments_include_punctuation_and_small_kana(self):
+        assert PALT_SPACE_ADJUSTMENTS["、"] == (0, 327)
+        assert PALT_SPACE_ADJUSTMENTS["。"] == (0, 340)
         assert PALT_SPACE_ADJUSTMENTS["〈"] == (317, 16)
         assert PALT_SPACE_ADJUSTMENTS["！"] == (167, 166)
         assert PALT_SPACE_ADJUSTMENTS["？"] == (89, 100)
         assert PALT_SPACE_ADJUSTMENTS["・"] == (167, 166)
+
+        for char in "ぁぃぅぇぉっゃゅゎゕゖァゥェォッュョヮヵヶ":
+            assert PALT_SPACE_ADJUSTMENTS[char] == (15, 15)
+        assert PALT_SPACE_ADJUSTMENTS["ょ"] == (30, 35)
+        assert PALT_SPACE_ADJUSTMENTS["ィ"] == (10, 10)
+        assert PALT_SPACE_ADJUSTMENTS["ャ"] == (10, 15)
 
     def test_family_spacing_adjustments_handle_middle_dot_tracking(self):
         assert DISPLAY_PALT_SPACE_ADJUSTMENTS["・"] == (167, 166)

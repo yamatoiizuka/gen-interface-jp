@@ -83,8 +83,8 @@ TRACKING_IGNORE_CODEPOINTS = (
 # more spacing-sensitive punctuation while letting the pipeline express the
 # policy as "full palt, then explicit spacing compensation".
 PALT_SPACE_ADJUSTMENTS = {
-    "、": (6, 327),
-    "。": (-7, 340),
+    "、": (0, 327),
+    "。": (0, 340),
     "，": (43, 290),
     "．": (53, 280),
     "〈": (317, 16),
@@ -121,6 +121,32 @@ PALT_SPACE_ADJUSTMENTS = {
     "・": (167, 166),
     "：": (167, 166),
     "；": (167, 166),
+    # Small kana read too tight after full palt; give them explicit
+    # breathing room on both sides.
+    "ぁ": (15, 15),
+    "ぃ": (15, 15),
+    "ぅ": (15, 15),
+    "ぇ": (15, 15),
+    "ぉ": (15, 15),
+    "っ": (15, 15),
+    "ゃ": (15, 15),
+    "ゅ": (15, 15),
+    "ょ": (30, 35),
+    "ゎ": (15, 15),
+    "ゕ": (15, 15),
+    "ゖ": (15, 15),
+    "ァ": (15, 15),
+    "ィ": (10, 10),
+    "ゥ": (15, 15),
+    "ェ": (15, 15),
+    "ォ": (15, 15),
+    "ッ": (15, 15),
+    "ャ": (10, 15),
+    "ュ": (15, 15),
+    "ョ": (15, 15),
+    "ヮ": (15, 15),
+    "ヵ": (15, 15),
+    "ヶ": (15, 15),
 }
 
 

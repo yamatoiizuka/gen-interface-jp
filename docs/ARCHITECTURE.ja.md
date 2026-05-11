@@ -160,10 +160,13 @@ inst に対して 4 つのサブパスを in-place で実行:
    advance を同量増やし、`rsb_delta` は advance を右側だけ広げる。
    アウトライン座標は触らない。各エントリは特定グリフを特定の隣接リズムに
    対して個別チューニングする想定なので、慎重に追加すること。現在の調整値は
-   `font/build.py` の `FAMILIES` を参照。`U+30FB` (・) は `trackingIgnore`
-   ではなくここで扱う: 他の調整対象の句読点と同じく tracking を通し、
-   Normal family では family-specific な spacing 値で最終 hmtx を従来の
-   目標に合わせる。
+   `font/build.py` の `FAMILIES` を参照。小書きひらがな / カタカナは、
+   palt 後に詰まり気味に見えるため、このレイヤーで左右に明示的な余白を
+   足す。大半の小書き仮名は左右 15 units を基準にしつつ、カタカナの
+   小書き「ィ」「ャ」や、ひらがなの小書き「ょ」などは見え方に合わせて
+   個別値を持つ。`U+30FB` (・) は `trackingIgnore` ではなくここで
+   扱う: 他の調整対象の句読点と同じく tracking を通し、Normal family では
+   family-specific な spacing 値で最終 hmtx を従来の目標に合わせる。
 4. **bbox 除去** (`_strip_extreme_glyphs`) — 下記 [垂直メトリクス] 参照。
 
 オプションの **横スケール** (`xScale` 設定、現在未使用) は上記の後に
