@@ -35,6 +35,7 @@ With [subsetting similar to Google Fonts](https://developers.googleblog.com/goog
  100.css ... 800.css
  -->
 <head>
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
   <link
     rel="stylesheet"
     href="https://cdn.jsdelivr.net/npm/gen-interface-jp@latest/cdn/400.css"
@@ -58,6 +59,7 @@ body {
  display-100.css ... display-800.css
  -->
 <head>
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
   <link
     rel="stylesheet"
     href="https://cdn.jsdelivr.net/npm/gen-interface-jp@latest/cdn/display-800.css"

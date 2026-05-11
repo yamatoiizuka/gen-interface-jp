@@ -1,4 +1,4 @@
-import { useRef } from 'react'
+import { useRef, useState } from 'react'
 
 type Props = {
   kind: 'size' | 'weight'
@@ -26,6 +26,11 @@ export function Slider({
   pillLabels,
 }: Props) {
   const trackRef = useRef<HTMLSpanElement>(null)
+  /* Tracked so CSS can keep "control-hover" styling active for the whole
+     drag, even when the pointer leaves the slider. preventDefault() on
+     pointerdown breaks :active reliability across browsers, so we drive
+     this from React instead. */
+  const [isDragging, setIsDragging] = useState(false)
 
   const updateFromX = (clientX: number) => {
     const el = trackRef.current
@@ -39,9 +44,11 @@ export function Slider({
 
   const handlePointerDown = (e: React.PointerEvent<HTMLSpanElement>) => {
     e.preventDefault()
+    setIsDragging(true)
     updateFromX(e.clientX)
     const move = (ev: PointerEvent) => updateFromX(ev.clientX)
     const up = () => {
+      setIsDragging(false)
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', up)
       window.removeEventListener('pointercancel', up)
@@ -54,7 +61,7 @@ export function Slider({
   const ratio = (value - min) / (max - min)
 
   return (
-    <div className="slider">
+    <div className={`slider${isDragging ? ' slider--dragging' : ''}`}>
       <div className="slider__main">
         <span className={`slider__icon slider__icon--${kind}`} aria-hidden="true">
           <span className="slider__icon-a slider__icon-a-large">A</span>

@@ -87,7 +87,7 @@ h2 {
 
 .page {
   position: relative;
-  max-width: 81rem; /* 1280 */
+  max-width: 80rem; /* 1280 */
   width: 100%;
   margin: 0 auto;
   background: var(--color-bg);
@@ -656,6 +656,48 @@ h2 {
 .webfont__code-value {
   color: var(--color-code-value);
 }
+
+/* Control-hover focus: while hovering a control, dim every string/value
+   token in the same row except the ones marked as relevant to that
+   control. Surfaces the parts of the snippet that the control actually
+   changes.
+   - Radio hover  → URL + font-family stay blue
+   - Slider hover → URL + font-weight stay blue */
+.variations__row:has(.radio:hover)
+  .webfont__code
+  .webfont__code-string:not(.webfont__code--hl-url):not(
+    .webfont__code--hl-family
+  ),
+.variations__row:has(.radio:hover)
+  .webfont__code
+  .webfont__code-value:not(.webfont__code--hl-url):not(
+    .webfont__code--hl-family
+  ),
+.variations__row:has(.slider:hover, .slider--dragging)
+  .webfont__code
+  .webfont__code-string:not(.webfont__code--hl-url):not(
+    .webfont__code--hl-weight
+  ),
+.variations__row:has(.slider:hover, .slider--dragging)
+  .webfont__code
+  .webfont__code-value:not(.webfont__code--hl-url):not(
+    .webfont__code--hl-weight
+  ) {
+  color: var(--color-code-label);
+}
+
+/* Hover-only weight-name annotation. Hidden at rest so the snippet stays
+   minimal; revealed inline (no newline) while the slider is being hovered
+   or dragged, so the user sees the friendly name of the value they're
+   picking. */
+.webfont__code--hover-only {
+  display: none;
+}
+.variations__row:has(.slider:hover, .slider--dragging)
+  .webfont__code--hover-only {
+  display: inline;
+}
+
 
 /* Each logical code line is its own block so wrapped content hangs at the
    same indent depth as the original line (instead of falling back to

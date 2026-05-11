@@ -85,9 +85,39 @@ function CodeLine({
 
 /* Syntax-highlight token. Colors are mapped 1:1 to vscode-theme-w3schools-light:
    - comment / tag-punct / tag-name / attr / string / selector / prop / value /
-     punct — each rendered via .webfont__code-<type> in styles.css. */
-function Tok({ type, children }: { type: string; children: ReactNode }) {
-  return <span className={`webfont__code-${type}`}>{children}</span>;
+     punct — each rendered via .webfont__code-<type> in styles.css.
+   - `hl` tags a token as a focus point for control-hover dimming:
+     - "url"    — the stylesheet URL (kept blue on radio AND slider hover)
+     - "family" — the font-family name (kept blue on radio hover)
+     - "weight" — the font-weight number (kept blue on slider hover)
+     CSS in styles.css decides which `hl-*` survives each hover state. */
+type HlKind = "url" | "family" | "weight";
+function Tok({
+  type,
+  hl,
+  children,
+}: {
+  type: string;
+  hl?: HlKind;
+  children: ReactNode;
+}) {
+  const cls = `webfont__code-${type}${hl ? ` webfont__code--hl-${hl}` : ""}`;
+  return <span className={cls}>{children}</span>;
+}
+
+function PreconnectLine() {
+  return (
+    <CodeLine className="webfont__code-line--indent-2">
+      <Tok type="tag-punct">{"<"}</Tok>
+      <Tok type="tag-name">{"link"}</Tok> <Tok type="attr">{"rel"}</Tok>
+      <Tok type="tag-punct">{"="}</Tok>
+      <Tok type="string">{`"preconnect"`}</Tok> <Tok type="attr">{"href"}</Tok>
+      <Tok type="tag-punct">{"="}</Tok>
+      <Tok type="string">{`"https://cdn.jsdelivr.net"`}</Tok>{" "}
+      <Tok type="attr">{"crossorigin"}</Tok>
+      <Tok type="tag-punct">{">"}</Tok>
+    </CodeLine>
+  );
 }
 
 function LinkLine({ fileName }: { fileName: string }) {
@@ -99,7 +129,7 @@ function LinkLine({ fileName }: { fileName: string }) {
       <Tok type="tag-punct">{"="}</Tok>
       <Tok type="string">{`"stylesheet"`}</Tok> <Tok type="attr">{"href"}</Tok>
       <Tok type="tag-punct">{"="}</Tok>
-      <Tok type="string">{`"${url}"`}</Tok>
+      <Tok type="string" hl="url">{`"${url}"`}</Tok>
       <Tok type="tag-punct">{">"}</Tok>
     </CodeLine>
   );
@@ -110,11 +140,16 @@ function CssRule({
   family,
   weight,
   weightRange,
+  weightName,
 }: {
   selector: ReactNode;
   family: string;
   weight: number;
   weightRange?: string;
+  // When provided, an inline weight-name comment (e.g. "Regular") is rendered
+  // after the font-weight value. Hidden at rest via .webfont__code--hover-only,
+  // revealed while the slider is hovered or being dragged.
+  weightName?: string;
 }) {
   return (
     <>
@@ -123,19 +158,27 @@ function CssRule({
       </CodeLine>
       <CodeLine className="webfont__code-line--indent-2">
         <Tok type="prop">{"font-family"}</Tok>
-        <Tok type="punct">{":"}</Tok> <Tok type="string">{`"${family}"`}</Tok>
+        <Tok type="punct">{":"}</Tok>{" "}
+        <Tok type="string" hl="family">{`"${family}"`}</Tok>
         <Tok type="punct">{","}</Tok> <Tok type="value">{"sans-serif"}</Tok>
         <Tok type="punct">{";"}</Tok>
       </CodeLine>
       <CodeLine className="webfont__code-line--indent-2">
         <Tok type="prop">{"font-weight"}</Tok>
-        <Tok type="punct">{":"}</Tok> <Tok type="value">{`${weight}`}</Tok>
+        <Tok type="punct">{":"}</Tok>{" "}
+        <Tok type="value" hl="weight">{`${weight}`}</Tok>
         <Tok type="punct">{";"}</Tok>
         {weightRange ? (
           <>
             {" "}
             <Tok type="comment">{`/* ${weightRange} */`}</Tok>
           </>
+        ) : null}
+        {weightName ? (
+          <span className="webfont__code--hover-only">
+            {" "}
+            <Tok type="comment">{`/* ${weightName} */`}</Tok>
+          </span>
         ) : null}
       </CodeLine>
       <CodeLine>
@@ -308,6 +351,7 @@ export function Variations() {
               <Tok type="tag-name">{"head"}</Tok>
               <Tok type="tag-punct">{">"}</Tok>
             </CodeLine>
+            <PreconnectLine />
             <LinkLine fileName={linkFile} />
             <CodeLine>
               <Tok type="tag-punct">{"</"}</Tok>
@@ -324,6 +368,7 @@ export function Variations() {
                 family="Gen Interface JP"
                 weight={mode === "all" ? 400 : weight}
                 weightRange={mode === "all" ? "100–800" : undefined}
+                weightName={mode === "all" ? undefined : WEIGHT_NAMES[weight]}
               />
             )}
             {showNormal && showDisplay && (
@@ -341,6 +386,7 @@ export function Variations() {
                 family="Gen Interface JP Display"
                 weight={mode === "all" ? 700 : weight}
                 weightRange={mode === "all" ? "100–800" : undefined}
+                weightName={mode === "all" ? undefined : WEIGHT_NAMES[weight]}
               />
             )}
           </pre>
