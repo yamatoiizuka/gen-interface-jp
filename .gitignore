@@ -8,6 +8,9 @@ venv/
 # Build output
 dist/
 
+# Scratch verification pages
+scratch.*.html
+
 # Node
 node_modules/
 site/node_modules/

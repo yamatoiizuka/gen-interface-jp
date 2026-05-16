@@ -16,21 +16,28 @@ from font.build import (
     _EXTREME_YMAX,
     _EXTREME_YMIN,
     _VERTICAL_REPEAT_MARK_CODEPOINTS,
+    _feature_adjustments_for_codepoints,
     _get_cjk_glyphs,
     _get_variable_palt,
+    _get_variable_vpal,
     _get_vert_alternates,
     _glyphs_for_codepoints,
     _glyph_codepoint,
     _is_cjk_codepoint,
     _is_kana_letter,
     _is_kana_or_punct,
+    _retarget_feature_adjustments,
+    _retarget_named_adjustments,
     _split_cmap_codepoint_glyph,
     _strip_extreme_glyphs,
     DISPLAY_PALT_SPACE_ADJUSTMENTS,
     NORMAL_PALT_SPACE_ADJUSTMENTS,
+    PALT_FEATURE_CHARS,
     PALT_SPACE_ADJUSTMENTS,
     SUB_EXCLUDE_CODEPOINTS,
+    SYNTHETIC_VPAL_ADJUSTMENTS,
     TRACKING_IGNORE_CODEPOINTS,
+    VPAL_FEATURE_CHARS,
 )
 from merge_fonts import parse_codepoint_list
 
@@ -534,13 +541,15 @@ class TestApplyTracking:
 # ---------------------------------------------------------------------------
 
 class TestPaltSymbolPolicy:
-    """Full palt is the default; spacing values mark the adjusted symbols."""
+    """Full palt is baked by default; selected yakumono remains runtime palt."""
 
     def test_tracking_only_symbols_are_implicit_palt_entries(self):
         palt = _get_variable_palt()
 
         for glyph_name in (
             "uni3012", "uni3005", "uni3006",
+            "uniFF02", "uniFF03", "uniFF04", "uniFF06",
+            "uniFF07", "uniFF0A",
             "uniFF10", "uniFF19", "uniFF21", "uniFF2C",
             "uniFF2E", "uniFF3A", "uniFF41", "uniFF56",
             "uniFF58", "uniFF5A", "uniFF3E",
@@ -557,13 +566,79 @@ class TestPaltSymbolPolicy:
         assert "uniFF57" not in palt  # ｗ
         assert "uniFF40" not in palt  # ｀
 
-    def test_palt_spacing_adjustments_include_punctuation_and_small_kana(self):
-        assert PALT_SPACE_ADJUSTMENTS["、"] == (0, 327)
-        assert PALT_SPACE_ADJUSTMENTS["。"] == (0, 340)
-        assert PALT_SPACE_ADJUSTMENTS["〈"] == (317, 16)
-        assert PALT_SPACE_ADJUSTMENTS["！"] == (167, 166)
-        assert PALT_SPACE_ADJUSTMENTS["？"] == (89, 100)
-        assert PALT_SPACE_ADJUSTMENTS["・"] == (167, 166)
+    def test_yakumono_uses_runtime_palt_not_spacing(self):
+        assert len(PALT_FEATURE_CHARS) == 48
+        for char in (
+            "、。，．〈〉《》「」『』【】〔〕〖〗〘〙〚〛"
+            "（）｛｝｟｠〝〞〟［］！？・：；"
+            "〒＂＃＄＆＇＊＾｀￥"
+        ):
+            assert char in PALT_FEATURE_CHARS
+            assert char not in PALT_SPACE_ADJUSTMENTS
+
+    def test_noto_vpal_yakumono_uses_separate_runtime_target_set(self):
+        vpal = _get_variable_vpal()
+        assert len(VPAL_FEATURE_CHARS) == 33
+
+        palt_overlap = set("！？・〒＃＄＆＊￥")
+        vpal_only = set("︐︑︒︗︘︵︶︷︸︹︺︻︼︽︾︿﹀﹁﹂﹃﹄﹇﹈％")
+
+        assert set(VPAL_FEATURE_CHARS) & set(PALT_FEATURE_CHARS) == palt_overlap
+        assert set(VPAL_FEATURE_CHARS) - set(PALT_FEATURE_CHARS) == vpal_only
+
+        expected_glyphs = {
+            "uni3012",  # 〒
+            "uni2027",  # ・ (Noto source glyph before U+30FB split)
+            "uniFF01",  # ！
+            "uniFF03",  # ＃
+            "uniFF04",  # ＄
+            "uniFF06",  # ＆
+            "uniFF0A",  # ＊
+            "uniFF1F",  # ？
+            "uniFFE5",  # ￥
+            "uniFE10",  # ︐
+            "uniFE11",  # ︑
+            "uniFE12",  # ︒
+            "uniFE17",  # ︗
+            "uniFE18",  # ︘
+            "uniFE35",  # ︵
+            "uniFE36",  # ︶
+            "uniFE37",  # ︷
+            "uniFE38",  # ︸
+            "uniFE39",  # ︹
+            "uniFE3A",  # ︺
+            "uniFE3B",  # ︻
+            "uniFE3C",  # ︼
+            "uniFE3D",  # ︽
+            "uniFE3E",  # ︾
+            "uniFE3F",  # ︿
+            "uniFE40",  # ﹀
+            "uniFE41",  # ﹁
+            "uniFE42",  # ﹂
+            "uniFE43",  # ﹃
+            "uniFE44",  # ﹄
+            "uniFE47",  # ﹇
+            "uniFE48",  # ﹈
+            "uniFF05",  # ％
+        }
+
+        assert expected_glyphs <= set(vpal)
+
+    def test_colon_vpal_is_synthesized_for_vertical_glyph(self):
+        assert SYNTHETIC_VPAL_ADJUSTMENTS == {
+            "glyph17071": (250, -500),
+            "uniFF1B": (250, -500),
+        }
+
+    def test_palt_spacing_adjustments_are_small_kana_only(self):
+        assert "、" not in PALT_SPACE_ADJUSTMENTS
+        assert "。" not in PALT_SPACE_ADJUSTMENTS
+        assert "〈" not in PALT_SPACE_ADJUSTMENTS
+        assert "！" not in PALT_SPACE_ADJUSTMENTS
+        assert "？" not in PALT_SPACE_ADJUSTMENTS
+        assert "・" not in PALT_SPACE_ADJUSTMENTS
+        assert "〒" not in PALT_SPACE_ADJUSTMENTS
+        assert "￥" not in PALT_SPACE_ADJUSTMENTS
 
         for char in "ぁぃぅぇぉっゃゅゎゕゖァゥェォッュョヮヵヶ":
             assert PALT_SPACE_ADJUSTMENTS[char] == (15, 15)
@@ -571,17 +646,18 @@ class TestPaltSymbolPolicy:
         assert PALT_SPACE_ADJUSTMENTS["ィ"] == (10, 10)
         assert PALT_SPACE_ADJUSTMENTS["ャ"] == (10, 15)
 
-    def test_family_spacing_adjustments_handle_middle_dot_tracking(self):
-        assert DISPLAY_PALT_SPACE_ADJUSTMENTS["・"] == (167, 166)
-        assert NORMAL_PALT_SPACE_ADJUSTMENTS["・"] == (147, 146)
+    def test_family_spacing_adjustments_do_not_override_middle_dot(self):
+        assert "・" in PALT_FEATURE_CHARS
+        assert "・" not in DISPLAY_PALT_SPACE_ADJUSTMENTS
+        assert "・" not in NORMAL_PALT_SPACE_ADJUSTMENTS
 
     def test_codepoint_entries_resolve_to_glyphs(self, synthetic_ttf):
         glyphs = _glyphs_for_codepoints(
             synthetic_ttf,
-            (0x2500, "U+3033-U+3035"),
+            (0x2500, "、", "U+3033-U+3035"),
         )
 
-        assert glyphs == {"uni2500", "uni3033", "uni3034", "uni3035"}
+        assert glyphs == {"uni2500", "uni3001", "uni3033", "uni3034", "uni3035"}
 
     def test_middle_dot_can_split_from_shared_noto_glyph(self, synthetic_ttf):
         synthetic_ttf.setGlyphOrder([*synthetic_ttf.getGlyphOrder(), "uni2027"])
@@ -600,6 +676,56 @@ class TestPaltSymbolPolicy:
         assert cmap[0x30FB] == "uni30FB"
         assert synthetic_ttf["hmtx"]["uni30FB"] == before_hmtx
         assert synthetic_ttf["hmtx"]["uni2027"] == before_hmtx
+
+    def test_runtime_feature_adjustments_survive_merge_renames(self, synthetic_ttf):
+        synthetic_ttf.setGlyphOrder([
+            *synthetic_ttf.getGlyphOrder(),
+            "uni2035",
+            "uni2035.orig",
+        ])
+        synthetic_ttf["glyf"]["uni2035"] = copy.deepcopy(synthetic_ttf["glyf"]["A"])
+        synthetic_ttf["glyf"]["uni2035.orig"] = copy.deepcopy(synthetic_ttf["glyf"]["A"])
+        synthetic_ttf["hmtx"].metrics["uni2035"] = synthetic_ttf["hmtx"]["A"]
+        synthetic_ttf["hmtx"].metrics["uni2035.orig"] = synthetic_ttf["hmtx"]["A"]
+        for table in synthetic_ttf["cmap"].tables:
+            table.cmap[0x2035] = "uni2035"
+            table.cmap[0xFF40] = "uni2035.orig"
+
+        retargeted = _retarget_feature_adjustments(
+            synthetic_ttf,
+            {0xFF40: (-199, -500)},
+        )
+
+        assert retargeted == {"uni2035.orig": (-199, -500)}
+
+    def test_runtime_feature_adjustments_capture_pre_merge_codepoints(self, synthetic_ttf):
+        for table in synthetic_ttf["cmap"].tables:
+            table.cmap[0xFF40] = "uni3030"
+
+        adjustments = _feature_adjustments_for_codepoints(
+            synthetic_ttf,
+            ("｀", "U+1234"),
+            {"uni3030": (-199, -500)},
+        )
+
+        assert adjustments == {0xFF40: (-199, -500)}
+
+    def test_named_fallback_adjustments_can_retarget_by_codepoint(self, synthetic_ttf):
+        synthetic_ttf.setGlyphOrder([
+            *synthetic_ttf.getGlyphOrder(),
+            "uniFF1B.orig",
+        ])
+        synthetic_ttf["glyf"]["uniFF1B.orig"] = copy.deepcopy(synthetic_ttf["glyf"]["A"])
+        synthetic_ttf["hmtx"].metrics["uniFF1B.orig"] = synthetic_ttf["hmtx"]["A"]
+        for table in synthetic_ttf["cmap"].tables:
+            table.cmap[0xFF1B] = "uniFF1B.orig"
+
+        retargeted = _retarget_named_adjustments(
+            synthetic_ttf,
+            {"uniFF1B": (250, -500), "glyph17071": (250, -500)},
+        )
+
+        assert retargeted == {"uniFF1B.orig": (250, -500)}
 
 
 # ---------------------------------------------------------------------------
@@ -755,4 +881,31 @@ class TestGetVariablePalt:
         # Two calls return the same cached dict — module-level cache.
         first = _get_variable_palt()
         second = _get_variable_palt()
+        assert first is second
+
+
+# ---------------------------------------------------------------------------
+# _get_variable_vpal
+# ---------------------------------------------------------------------------
+
+class TestGetVariableVpal:
+    """Cached read of vpal from the vendor Noto Variable."""
+
+    def test_returns_dict(self):
+        vpal = _get_variable_vpal()
+        assert isinstance(vpal, dict)
+        assert len(vpal) > 0
+
+    def test_returns_yplacement_yadvance_tuples(self):
+        vpal = _get_variable_vpal()
+        for gname, value in list(vpal.items())[:5]:
+            assert isinstance(gname, str)
+            assert isinstance(value, tuple)
+            assert len(value) == 2
+            assert all(isinstance(v, int) for v in value)
+
+    def test_cached_returns_same_instance(self):
+        # Two calls return the same cached dict — module-level cache.
+        first = _get_variable_vpal()
+        second = _get_variable_vpal()
         assert first is second
