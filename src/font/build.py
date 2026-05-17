@@ -12,8 +12,8 @@ Shared pipeline per weight:
      subFont.excludeCodepoints to keep CJK-conventional symbols on Noto)
 
 Families:
-  - Gen Interface JP         : Inter       + proportional Noto, tracking +50 (kana/punct +60)
-  - Gen Interface JP Display : InterDisplay + proportional Noto, tracking +20
+  - Gen Interface JP         : Inter       + proportional Noto, tracking +30 (kana/punct +40)
+  - Gen Interface JP Display : InterDisplay + proportional Noto, tracking +0
 
 Outputs TTF into dist/ttf/. Web delivery (subset WOFF2 chunks served via
 unicode-range) is generated separately by the webfont module from these
@@ -23,12 +23,20 @@ TTF outputs — see src/webfont/.
 from __future__ import annotations
 
 import copy
+from contextlib import contextmanager
+import logging
 import os
 import sys
 
 from fontTools.ttLib import TTFont
+from fontTools.ttLib.reorderGlyphs import reorderGlyphs
 from merge_fonts import merge_fonts, parse_codepoint_list
-from .proportional import make_proportional
+from .proportional import (
+    _install_palt_feature,
+    _install_vpal_feature,
+    _remove_prop_features,
+    make_proportional,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -73,56 +81,52 @@ TRACKING_IGNORE_CODEPOINTS = (
     "U+FFE3",          # ￣ FULLWIDTH MACRON
 )
 
-# Glyphs listed here get full Noto palt like every other palt glyph, then
-# receive explicit hmtx spacing after tracking. The values are derived from
-# the canonical Noto palt records so that:
-#
-#   full palt + tracking + glyphSpacing == previous reduced-palt output
-#
-# for advance and hmtx LSB. This keeps the current visual rhythm for the
-# more spacing-sensitive punctuation while letting the pipeline express the
-# policy as "full palt, then explicit spacing compensation".
+# These yakumono punctuation/symbol glyphs keep a live palt feature instead
+# of receiving hand-tuned hmtx spacing. They still receive normal tracking;
+# palt is applied later by the shaper when the feature is enabled.
+PALT_FEATURE_CHARS = (
+    "、", "。", "，", "．",
+    "〈", "〉", "《", "》",
+    "「", "」", "『", "』",
+    "【", "】", "〔", "〕",
+    "〖", "〗", "〘", "〙",
+    "〚", "〛", "（", "）",
+    "｛", "｝", "｟", "｠",
+    "〝", "〞", "〟", "［", "］",
+    "！", "？", "・", "：", "；",
+    "〒", "＂", "＃", "＄", "＆",
+    "＇", "＊", "＾", "｀", "￥",
+)
+
+# Unicode-mapped Noto vpal yakumono records kept as a live vertical
+# proportional feature. This intentionally differs from PALT_FEATURE_CHARS:
+# Noto's vpal source contains vertical presentation forms and fullwidth
+# percent, so those remain available for vertical shaping even though they
+# are not horizontal palt targets.
+VPAL_FEATURE_CHARS = (
+    "〒", "・",
+    "︐", "︑", "︒", "︗", "︘",
+    "︵", "︶", "︷", "︸", "︹", "︺",
+    "︻", "︼", "︽", "︾", "︿", "﹀",
+    "﹁", "﹂", "﹃", "﹄", "﹇", "﹈",
+    "！", "＃", "＄", "％", "＆", "＊", "？", "￥",
+)
+
+# Noto has palt for fullwidth colon/semicolon but no matching vpal. In
+# vertical layout U+FF1A (：) is GSUB-vert substituted to the unmapped
+# glyph17071, so a Unicode-driven VPAL_FEATURE_CHARS pass cannot reach it.
+# Synthesize the vertical analogue of Noto's palt (-250, -500): shift down
+# into the half-height slot and reduce vertical advance by 500.
+SYNTHETIC_VPAL_ADJUSTMENTS = {
+    "glyph17071": (250, -500),  # vertical alternate for U+FF1A ：
+    "uniFF1B": (250, -500),     # U+FF1B ； has no vert substitution
+}
+
+# Glyphs listed here get full Noto palt baked like every other non-runtime
+# palt glyph, then receive explicit hmtx spacing after tracking. Keep this
+# list limited to small kana that need breathing room after palt; yakumono
+# belongs in PALT_FEATURE_CHARS so it can tighten via the live palt feature.
 PALT_SPACE_ADJUSTMENTS = {
-    "、": (0, 327),
-    "。": (0, 340),
-    "，": (43, 290),
-    "．": (53, 280),
-    "〈": (317, 16),
-    "〉": (17, 316),
-    "《": (320, 13),
-    "》": (13, 320),
-    "「": (321, 12),
-    "」": (13, 320),
-    "『": (321, 12),
-    "』": (13, 320),
-    "【": (317, 16),
-    "】": (16, 317),
-    "〔": (314, 19),
-    "〕": (19, 314),
-    "〖": (333, 0),
-    "〗": (0, 333),
-    "〘": (320, 13),
-    "〙": (13, 320),
-    "〚": (333, 0),
-    "〛": (0, 333),
-    "（": (309, 24),
-    "）": (24, 309),
-    "｛": (320, 13),
-    "｝": (13, 320),
-    "｟": (315, 18),
-    "｠": (19, 314),
-    "〝": (312, 21),
-    "〞": (0, 333),
-    "〟": (21, 312),
-    "［": (321, 12),
-    "］": (13, 320),
-    "！": (167, 166),
-    "？": (89, 100),
-    "・": (167, 166),
-    "：": (167, 166),
-    "；": (167, 166),
-    # Small kana read too tight after full palt; give them explicit
-    # breathing room on both sides.
     "ぁ": (15, 15),
     "ぃ": (15, 15),
     "ぅ": (15, 15),
@@ -157,10 +161,6 @@ DISPLAY_TRACKING_KANA = 0
 
 NORMAL_PALT_SPACE_ADJUSTMENTS = {
     **PALT_SPACE_ADJUSTMENTS,
-    # U+30FB used to skip tracking in the legacy pipeline. It now passes
-    # through tracking like the other Group A symbols, so Normal uses a
-    # family-specific spacing value to keep the same final hmtx target.
-    "・": (147, 146),
 }
 
 DISPLAY_PALT_SPACE_ADJUSTMENTS = PALT_SPACE_ADJUSTMENTS
@@ -173,6 +173,8 @@ FAMILIES = {
         "tracking": NORMAL_TRACKING,
         "trackingKana": NORMAL_TRACKING_KANA,
         "trackingIgnore": TRACKING_IGNORE_CODEPOINTS,
+        "runtimePalt": PALT_FEATURE_CHARS,
+        "runtimeVpal": VPAL_FEATURE_CHARS,
         "folderPrefix": "GenInterfaceJP",
         # Per-glyph sidebearing tweaks applied after tracking. Map a
         # codepoint (int) or single-char string to a (lsb_delta, rsb_delta)
@@ -190,6 +192,8 @@ FAMILIES = {
         "tracking": DISPLAY_TRACKING,
         "trackingKana": DISPLAY_TRACKING_KANA,
         "trackingIgnore": TRACKING_IGNORE_CODEPOINTS,
+        "runtimePalt": PALT_FEATURE_CHARS,
+        "runtimeVpal": VPAL_FEATURE_CHARS,
         "folderPrefix": "GenInterfaceJPDisplay",
         "glyphSpacing": {
             **DISPLAY_PALT_SPACE_ADJUSTMENTS,
@@ -252,10 +256,11 @@ SCALE = 0.925
 
 
 # ---------------------------------------------------------------------------
-# Variable-font palt cache
+# Variable-font palt/vpal caches
 # ---------------------------------------------------------------------------
 
 _variable_palt_cache: dict | None = None
+_variable_vpal_cache: dict | None = None
 
 
 def _get_variable_palt() -> dict[str, tuple[int, int]]:
@@ -275,6 +280,22 @@ def _get_variable_palt() -> dict[str, tuple[int, int]]:
         font = TTFont(NOTO_VARIABLE)
         _variable_palt_cache = _read_palt(font)
     return _variable_palt_cache
+
+
+def _get_variable_vpal() -> dict[str, tuple[int, int]]:
+    """Read vpal adjustments from the original Noto variable font (cached).
+
+    Mirrors :func:`_get_variable_palt`; the final build only reinstalls the
+    subset that overlaps runtime yakumono glyphs, but the source of truth is
+    still the vendor variable font.
+    """
+    global _variable_vpal_cache
+    if _variable_vpal_cache is None:
+        from .proportional import _read_vpal
+
+        font = TTFont(NOTO_VARIABLE)
+        _variable_vpal_cache = _read_vpal(font)
+    return _variable_vpal_cache
 
 
 # ---------------------------------------------------------------------------
@@ -639,7 +660,14 @@ def _glyphs_for_codepoints(
     font: TTFont,
     codepoint_entries: list | tuple | set | None,
 ) -> set[str]:
-    """Resolve codepoint entries to glyph names via cmap."""
+    """Resolve codepoint / single-character entries to glyph names via cmap."""
+    codepoints = _codepoints_for_entries(codepoint_entries)
+    cmap = font.getBestCmap() or {}
+    return {glyph_name for cp, glyph_name in cmap.items() if cp in codepoints}
+
+
+def _codepoints_for_entries(codepoint_entries: list | tuple | set | None) -> set[int]:
+    """Resolve mixed codepoint entries into integer codepoints."""
     if not codepoint_entries:
         return set()
     entries = (
@@ -647,9 +675,107 @@ def _glyphs_for_codepoints(
         if isinstance(codepoint_entries, set)
         else codepoint_entries
     )
-    codepoints = parse_codepoint_list(entries)
+    codepoints = set()
+    parse_entries = []
+    for entry in entries:
+        if isinstance(entry, str) and len(entry) == 1:
+            codepoints.add(ord(entry))
+        else:
+            parse_entries.append(entry)
+    if parse_entries:
+        codepoints.update(parse_codepoint_list(parse_entries))
+    return codepoints
+
+
+def _feature_adjustments_for_codepoints(
+    font: TTFont,
+    codepoint_entries: list | tuple | set | None,
+    source_adjustments: dict[str, tuple[int, int]],
+) -> dict[int, tuple[int, int]]:
+    """Capture feature records by codepoint before merge-time glyph renames.
+
+    font-baker can rename base glyphs when Inter and Noto both contain the
+    same glyph name. Runtime palt/vpal targets must therefore survive by
+    Unicode scalar, then be retargeted to the final cmap glyph after merge.
+    """
+    if not source_adjustments:
+        return {}
+    codepoints = _codepoints_for_entries(codepoint_entries)
+    if not codepoints:
+        return {}
     cmap = font.getBestCmap() or {}
-    return {glyph_name for cp, glyph_name in cmap.items() if cp in codepoints}
+    return {
+        cp: source_adjustments[glyph_name]
+        for cp, glyph_name in cmap.items()
+        if cp in codepoints and glyph_name in source_adjustments
+    }
+
+
+def _retarget_feature_adjustments(
+    font: TTFont,
+    adjustments_by_codepoint: dict[int, tuple[int, int]],
+) -> dict[str, tuple[int, int]]:
+    """Map codepoint-keyed feature records onto the final font's glyph names."""
+    if not adjustments_by_codepoint:
+        return {}
+    cmap = font.getBestCmap() or {}
+    glyph_order = set(font.getGlyphOrder())
+    return {
+        glyph_name: value
+        for cp, value in adjustments_by_codepoint.items()
+        if (glyph_name := cmap.get(cp)) in glyph_order
+    }
+
+
+def _retarget_named_adjustments(
+    font: TTFont,
+    adjustments_by_glyph: dict[str, tuple[int, int]],
+) -> dict[str, tuple[int, int]]:
+    """Map glyph-name fallback records onto the final font when possible."""
+    if not adjustments_by_glyph:
+        return {}
+    cmap = font.getBestCmap() or {}
+    glyph_order = set(font.getGlyphOrder())
+    retargeted = {}
+    for glyph_name, value in adjustments_by_glyph.items():
+        if glyph_name in glyph_order:
+            retargeted[glyph_name] = value
+            continue
+        cp = _glyph_codepoint(glyph_name)
+        if cp is not None and (target_glyph := cmap.get(cp)) in glyph_order:
+            retargeted[target_glyph] = value
+    return retargeted
+
+
+def _refresh_runtime_prop_features_after_merge(
+    final_path: str,
+    runtime_palt_by_codepoint: dict[int, tuple[int, int]],
+    runtime_vpal_by_codepoint: dict[int, tuple[int, int]],
+    runtime_vpal_by_glyph: dict[str, tuple[int, int]],
+) -> None:
+    """Reinstall live palt/vpal after Inter+Noto merge glyph renaming.
+
+    The pre-merge proportional Noto already has minimal runtime palt/vpal,
+    but font-baker may rename colliding base glyphs in the final font. Rebuild
+    those features once more against the final cmap so characters such as
+    U+FF40 (｀), which shares Noto's ``uni2035`` glyph before merge, keep their
+    live palt on the renamed final glyph.
+    """
+    font = TTFont(final_path)
+    palt_adjustments = _retarget_feature_adjustments(
+        font,
+        runtime_palt_by_codepoint,
+    )
+    vpal_adjustments = _retarget_feature_adjustments(
+        font,
+        runtime_vpal_by_codepoint,
+    )
+    vpal_adjustments.update(_retarget_named_adjustments(font, runtime_vpal_by_glyph))
+
+    _remove_prop_features(font)
+    _install_palt_feature(font, palt_adjustments)
+    _install_vpal_feature(font, vpal_adjustments)
+    font.save(final_path)
 
 
 def _tracking_ignore_glyphs(
@@ -772,6 +898,31 @@ def _apply_glyph_spacing(font: TTFont, spacing: dict | None) -> int:
     return adjusted
 
 
+@contextmanager
+def _suppress_fonttools_coverage_warnings():
+    """Suppress known coverage-order warnings around font-baker merge output.
+
+    font-baker can reorder glyphs while carrying layout lookups through the
+    merge. fontTools warns while writing that intermediate final font, then a
+    normal TTFont load/save sorts the coverage tables by the final glyph IDs.
+    """
+    logger = logging.getLogger("fontTools.ttLib.tables.otTables")
+    old_level = logger.level
+    logger.setLevel(logging.ERROR)
+    try:
+        yield
+    finally:
+        logger.setLevel(old_level)
+
+
+def _normalize_layout_coverage_order(font_path: str) -> None:
+    """Rewrite a TTF so GSUB/GPOS coverage tables follow final glyph order."""
+    with _suppress_fonttools_coverage_warnings():
+        font = TTFont(font_path)
+        reorderGlyphs(font, font.getGlyphOrder())
+        font.save(font_path)
+
+
 # ---------------------------------------------------------------------------
 # Pipeline
 # ---------------------------------------------------------------------------
@@ -786,9 +937,9 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
        Noto identity records survive into the inst.
     2. **Proportionalise** the inst — read palt from the variable cache
        (variable instantiation can corrupt palt), bake those adjustments
-       into hmtx, apply tracking, apply per-glyph sidebearing tweaks
-       from ``family["glyphSpacing"]``, strip extreme bbox glyphs,
-       optionally apply x-scale.
+       into hmtx except selected runtime-palt yakumono, apply tracking,
+       apply per-glyph sidebearing tweaks from ``family["glyphSpacing"]``,
+       strip extreme bbox glyphs, optionally apply x-scale.
     3. **Merge** the proportional Noto with the matching Inter master via
        font-baker. ``subFont.excludeCodepoints`` keeps CJK-conventional
        symbols (※, ◯, ①, Ⓐ, …) on the Noto outline, and font-baker's
@@ -836,6 +987,8 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
     tracking = family["tracking"]
     tracking_kana = family["trackingKana"]
     tracking_ignore = family.get("trackingIgnore")
+    runtime_palt_chars = family.get("runtimePalt")
+    runtime_vpal_chars = family.get("runtimeVpal")
 
     desc = f"tracking +{tracking}"
     if tracking_kana is not None:
@@ -845,24 +998,46 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
     font = TTFont(inst_path)
 
     # Split U+30FB from U+2027 before metrics work. Noto maps both to
-    # ``uni2027``, but U+30FB has an explicit spacing adjustment while
-    # U+2027 only needs palt + tracking.
+    # ``uni2027``, but U+30FB is one of the yakumono glyphs that should
+    # keep a live palt record while U+2027 stays on its own palt data.
     split_source = _split_cmap_codepoint_glyph(font, 0x30FB, "uni30FB")
+    runtime_palt_glyphs = _glyphs_for_codepoints(font, runtime_palt_chars)
+    runtime_vpal_glyphs = _glyphs_for_codepoints(font, runtime_vpal_chars)
 
-    # Read palt from the variable source rather than the freshly-baked inst:
-    # variable instantiation can leave palt ValueRecords with zeroed or
-    # otherwise stale XPlacement/XAdvance pairs. The cached variable read
-    # is canonical across all weights.
+    # Read palt/vpal from the variable source rather than the freshly-baked inst:
+    # variable instantiation can leave proportional ValueRecords with zeroed
+    # or otherwise stale placement/advance pairs. The cached variable read is
+    # canonical across all weights.
     palt_data = dict(_get_variable_palt())
     if split_source in palt_data:
         palt_data["uni30FB"] = palt_data[split_source]
+    vpal_data = dict(_get_variable_vpal())
+    if split_source in vpal_data:
+        vpal_data["uni30FB"] = vpal_data[split_source]
+    for glyph_name, value in SYNTHETIC_VPAL_ADJUSTMENTS.items():
+        if glyph_name in font.getGlyphOrder():
+            vpal_data[glyph_name] = value
+            runtime_vpal_glyphs.add(glyph_name)
+    runtime_palt_by_codepoint = _feature_adjustments_for_codepoints(
+        font,
+        runtime_palt_chars,
+        palt_data,
+    )
+    runtime_vpal_by_codepoint = _feature_adjustments_for_codepoints(
+        font,
+        runtime_vpal_chars,
+        vpal_data,
+    )
 
-    # Bake every Noto palt entry at full strength. Glyphs without palt keep
-    # their original hmtx; selected punctuation is adjusted later by
-    # glyphSpacing.
+    # Bake Noto palt entries at full strength except yakumono that should
+    # remain live palt/vpal features. Glyphs without palt keep their
+    # original hmtx.
     make_proportional(
         font,
         palt_override=palt_data,
+        runtime_palt=runtime_palt_glyphs,
+        vpal_override=vpal_data,
+        runtime_vpal=runtime_vpal_glyphs,
     )
     _apply_tracking(font, tracking, tracking_kana, tracking_ignore)
     spacing_adjusted = _apply_glyph_spacing(font, family.get("glyphSpacing"))
@@ -878,6 +1053,7 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
     family_name = family["familyName"]
     file_name = f"{family['folderPrefix']}-{weight_name}"
     ttf_dir = os.path.join(DIST_TTF, family_name)
+    final_path = os.path.join(ttf_dir, f"{file_name}.ttf")
     print(f"    [3/3] Merging {family['interPrefix']} + proportional Noto...")
     merge_config = {
         "subFont": {
@@ -904,13 +1080,21 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
         },
         "export": {
             "path": {
-                "font": os.path.join(ttf_dir, f"{file_name}.ttf"),
+                "font": final_path,
             },
         },
     }
-    merge_fonts(merge_config)
+    with _suppress_fonttools_coverage_warnings():
+        merge_fonts(merge_config)
+    _normalize_layout_coverage_order(final_path)
+    _refresh_runtime_prop_features_after_merge(
+        final_path,
+        runtime_palt_by_codepoint,
+        runtime_vpal_by_codepoint,
+        SYNTHETIC_VPAL_ADJUSTMENTS,
+    )
     return {
-        "fontPath": os.path.join(ttf_dir, f"{file_name}.ttf"),
+        "fontPath": final_path,
     }
 
 

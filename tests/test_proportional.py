@@ -7,6 +7,7 @@ Covers palt extraction, glyph translation, GPOS feature removal, and the
 from font.proportional import (
     PROP_FEATURES,
     _read_palt,
+    _read_vpal,
     _remove_prop_features,
     _shift_glyph_x,
     make_proportional,
@@ -49,6 +50,41 @@ class TestReadPalt:
     def test_empty_when_no_gsub_palt(self, synthetic_ttf):
         # synthetic_ttf has no GPOS at all
         assert _read_palt(synthetic_ttf) == {}
+
+
+# ---------------------------------------------------------------------------
+# _read_vpal
+# ---------------------------------------------------------------------------
+
+class TestReadVpal:
+    """GPOS vpal extraction."""
+
+    def test_returns_dict_for_noto(self, noto_subset):
+        vpal = _read_vpal(noto_subset)
+        assert isinstance(vpal, dict)
+        assert len(vpal) > 0
+
+    def test_values_are_yplacement_yadvance_pairs(self, noto_subset):
+        vpal = _read_vpal(noto_subset)
+        for gname, value in vpal.items():
+            assert isinstance(gname, str)
+            assert isinstance(value, tuple)
+            assert len(value) == 2
+            yp, ya = value
+            assert isinstance(yp, int)
+            assert isinstance(ya, int)
+
+    def test_middle_dot_has_negative_y_advance(self, noto_subset):
+        vpal = _read_vpal(noto_subset)
+        cmap = noto_subset.getBestCmap()
+        middle_dot_glyph = cmap.get(0x30FB)  # ・
+        if middle_dot_glyph in vpal:
+            yp, ya = vpal[middle_dot_glyph]
+            assert ya < 0, f"Expected negative YAdvance for ・, got {ya}"
+
+    def test_empty_when_no_gpos_vpal(self, synthetic_ttf):
+        # synthetic_ttf has no GPOS at all
+        assert _read_vpal(synthetic_ttf) == {}
 
 
 # ---------------------------------------------------------------------------
@@ -149,6 +185,19 @@ class TestRemovePropFeatures:
                     assert 0 <= idx < n_features, \
                         f"Stale FeatureIndex {idx} (n_features={n_features})"
 
+    def test_unreferenced_lookups_are_pruned(self, noto_subset):
+        _remove_prop_features(noto_subset)
+        gpos = noto_subset["GPOS"]
+        if not gpos.table.LookupList or not gpos.table.FeatureList:
+            return
+
+        n_lookups = gpos.table.LookupList.LookupCount
+        used = set()
+        for feature_record in gpos.table.FeatureList.FeatureRecord:
+            used.update(feature_record.Feature.LookupListIndex or [])
+
+        assert used == set(range(n_lookups))
+
     def test_no_op_when_no_prop_features(self, synthetic_ttf):
         # Synthetic font has no GPOS at all — should not raise.
         _remove_prop_features(synthetic_ttf)
@@ -159,7 +208,7 @@ class TestRemovePropFeatures:
 # ---------------------------------------------------------------------------
 
 class TestMakeProportional:
-    """End-to-end: bake palt → hmtx, optionally squeeze sidebearings, strip features."""
+    """End-to-end: bake palt → hmtx, optionally keep runtime palt."""
 
     def test_advance_narrows_for_palt_glyph(self, noto_subset):
         cmap = noto_subset.getBestCmap()
@@ -183,6 +232,79 @@ class TestMakeProportional:
         if gpos and gpos.table and gpos.table.FeatureList:
             tags = {fr.FeatureTag for fr in gpos.table.FeatureList.FeatureRecord}
             assert not (PROP_FEATURES & tags)
+
+    def test_runtime_palt_skips_baking_and_reinstalls_palt(self, noto_subset):
+        cmap = noto_subset.getBestCmap()
+        punct_glyph = cmap.get(0x3001)  # 、
+        palt = _read_palt(noto_subset)
+        if punct_glyph not in palt:
+            import pytest
+            pytest.skip("subset palt does not cover U+3001")
+
+        before_hmtx = noto_subset["hmtx"][punct_glyph]
+        expected_palt = palt[punct_glyph]
+
+        make_proportional(noto_subset, runtime_palt={punct_glyph})
+
+        after_hmtx = noto_subset["hmtx"][punct_glyph]
+        assert after_hmtx == before_hmtx
+        assert _read_palt(noto_subset) == {punct_glyph: expected_palt}
+
+        tags = {
+            fr.FeatureTag
+            for fr in noto_subset["GPOS"].table.FeatureList.FeatureRecord
+        }
+        assert "palt" in tags
+        assert not ({"vpal", "halt", "vhal"} & tags)
+
+    def test_runtime_palt_and_vpal_can_be_reinstalled_together(self, noto_subset):
+        cmap = noto_subset.getBestCmap()
+        punct_glyph = cmap.get(0x30FB)  # ・
+        palt = _read_palt(noto_subset)
+        vpal = _read_vpal(noto_subset)
+        if punct_glyph not in palt or punct_glyph not in vpal:
+            import pytest
+            pytest.skip("subset does not cover U+30FB palt/vpal")
+
+        before_hmtx = noto_subset["hmtx"][punct_glyph]
+        expected_palt = palt[punct_glyph]
+        expected_vpal = vpal[punct_glyph]
+
+        make_proportional(
+            noto_subset,
+            runtime_palt={punct_glyph},
+            runtime_vpal={punct_glyph},
+        )
+
+        assert noto_subset["hmtx"][punct_glyph] == before_hmtx
+        assert _read_palt(noto_subset) == {punct_glyph: expected_palt}
+        assert _read_vpal(noto_subset) == {punct_glyph: expected_vpal}
+
+        tags = {
+            fr.FeatureTag
+            for fr in noto_subset["GPOS"].table.FeatureList.FeatureRecord
+        }
+        assert {"palt", "vpal"} <= tags
+        assert not ({"halt", "vhal"} & tags)
+
+    def test_runtime_palt_does_not_keep_baked_glyphs_in_feature(self, noto_subset):
+        cmap = noto_subset.getBestCmap()
+        runtime_glyph = cmap.get(0x3001)  # 、
+        baked_glyph = cmap.get(0x3042)  # あ
+        palt = _read_palt(noto_subset)
+        if runtime_glyph not in palt or baked_glyph not in palt:
+            import pytest
+            pytest.skip("subset palt does not cover runtime and baked glyphs")
+
+        before_baked_aw = noto_subset["hmtx"][baked_glyph][0]
+        _, baked_xa = palt[baked_glyph]
+
+        make_proportional(noto_subset, runtime_palt={runtime_glyph})
+
+        assert noto_subset["hmtx"][baked_glyph][0] == before_baked_aw + baked_xa
+        after_palt = _read_palt(noto_subset)
+        assert runtime_glyph in after_palt
+        assert baked_glyph not in after_palt
 
     def test_palt_override_takes_precedence(self, noto_subset):
         cmap = noto_subset.getBestCmap()

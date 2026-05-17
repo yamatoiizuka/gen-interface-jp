@@ -10,10 +10,11 @@ Japanese composer, browser fallbacks, anything that treats CJK as
 monospaced for layout) miss those adjustments and lay the text out at
 full-width spacing.
 
-This module bakes ``palt`` into the static hmtx so the font reads as
-proportional everywhere, then removes the now-redundant ``palt``/``vpal``/
-``halt``/``vhal`` features to prevent apps that *do* honor them from
-double-applying. Glyphs not covered by ``palt`` keep their original
+This module bakes most ``palt`` values into the static hmtx so the font
+reads as proportional everywhere. A caller may keep a small glyph set as a
+live runtime ``palt`` / ``vpal`` feature; those glyphs are not baked, and
+fresh lookups are installed for them after the redundant proportional
+features are removed. Glyphs not covered by ``palt`` keep their original
 metrics — nothing is forced.
 
 Usage:
@@ -24,6 +25,7 @@ from __future__ import annotations
 
 import sys
 from fontTools.ttLib import TTFont
+from fontTools.ttLib.tables import otTables
 
 
 # GPOS features that provide proportional metric adjustments.
@@ -47,6 +49,9 @@ def make_proportional(
     squeeze_sb: set[str] | None = None,
     squeeze_sb_scale: float | None = None,
     palt_override: dict[str, tuple[int, int]] | None = None,
+    runtime_palt: set[str] | None = None,
+    vpal_override: dict[str, tuple[int, int]] | None = None,
+    runtime_vpal: set[str] | None = None,
 ) -> None:
     """Bake palt adjustments into hmtx in place, then strip prop features.
 
@@ -70,6 +75,17 @@ def make_proportional(
     been corrupted by variable instantiation. Variable→static baking can
     leave palt ValueRecords with zeroed XPlacement/XAdvance pairs.
 
+    ``runtime_palt`` leaves selected palt-covered glyphs unbaked and
+    reinstalls only those glyphs as a live ``palt`` feature. This lets a
+    final font expose palt for a narrow target set (e.g. yakumono)
+    without double-applying palt to kana / Latin glyphs that were already
+    baked into hmtx.
+
+    ``vpal_override`` / ``runtime_vpal`` mirror that runtime feature path
+    for vertical proportional metrics. ``vpal`` is not baked into hmtx; when
+    requested, selected records are preserved as a live GPOS feature after
+    the original proportional features are stripped.
+
     Only TrueType-outlined fonts are supported — palt baking writes back
     to ``glyf``, not to CFF.
     """
@@ -79,14 +95,30 @@ def make_proportional(
     if squeeze_sb_scale is None:
         squeeze_sb_scale = reduced_palt_scale
 
+    runtime_palt = runtime_palt or set()
+    runtime_vpal = runtime_vpal or set()
+
     # Extract palt adjustments before removing features
     palt_adjustments = palt_override if palt_override is not None else _read_palt(font)
+    runtime_palt_adjustments = {
+        glyph_name: value
+        for glyph_name, value in palt_adjustments.items()
+        if glyph_name in runtime_palt
+    }
+    vpal_adjustments = vpal_override if vpal_override is not None else _read_vpal(font)
+    runtime_vpal_adjustments = {
+        glyph_name: value
+        for glyph_name, value in vpal_adjustments.items()
+        if glyph_name in runtime_vpal
+    }
 
     glyf = font["glyf"]
     hmtx = font["hmtx"]
 
     # ── Apply palt adjustments ──
     for glyph_name, (x_placement, x_advance) in palt_adjustments.items():
+        if glyph_name in runtime_palt:
+            continue
         if glyph_name not in hmtx.metrics:
             continue
 
@@ -146,12 +178,17 @@ def make_proportional(
             new_aw = aw - lsb_remove - rsb_remove
             hmtx[glyph_name] = (new_aw, new_lsb)
 
-    # Remove proportional-metric GPOS features
+    # Remove proportional-metric GPOS features, then install minimal live
+    # palt/vpal lookups for glyphs intentionally kept at runtime.
     _remove_prop_features(font)
+    if runtime_palt_adjustments:
+        _install_palt_feature(font, runtime_palt_adjustments)
+    if runtime_vpal_adjustments:
+        _install_vpal_feature(font, runtime_vpal_adjustments)
 
 
 # ---------------------------------------------------------------------------
-# GPOS palt extraction
+# GPOS palt/vpal extraction
 # ---------------------------------------------------------------------------
 
 def _read_palt(font: TTFont) -> dict[str, tuple[int, int]]:
@@ -165,24 +202,43 @@ def _read_palt(font: TTFont) -> dict[str, tuple[int, int]]:
     Missing GPOS, missing FeatureList, or no palt records all return an
     empty dict — callers treat the absence of palt as "leave hmtx alone".
     """
+    return _read_single_pos_feature(font, "palt", "XPlacement", "XAdvance")
+
+
+def _read_vpal(font: TTFont) -> dict[str, tuple[int, int]]:
+    """Walk GPOS vpal lookups and return ``{glyph_name: (YPlacement, YAdvance)}``.
+
+    Mirrors :func:`_read_palt`, but reads vertical placement / advance
+    records. Missing GPOS, missing FeatureList, or no vpal records all
+    return an empty dict.
+    """
+    return _read_single_pos_feature(font, "vpal", "YPlacement", "YAdvance")
+
+
+def _read_single_pos_feature(
+    font: TTFont,
+    feature_tag: str,
+    placement_attr: str,
+    advance_attr: str,
+) -> dict[str, tuple[int, int]]:
+    """Read a SinglePos feature as ``{glyph_name: (placement, advance)}``."""
     gpos = font.get("GPOS")
     if gpos is None or gpos.table is None:
         return {}
     if gpos.table.FeatureList is None:
         return {}
 
-    # Find palt feature
-    palt_lookup_indices = []
+    lookup_indices = []
     for fr in gpos.table.FeatureList.FeatureRecord:
-        if fr.FeatureTag == "palt":
-            palt_lookup_indices.extend(fr.Feature.LookupListIndex)
+        if fr.FeatureTag == feature_tag:
+            lookup_indices.extend(fr.Feature.LookupListIndex)
 
-    if not palt_lookup_indices:
+    if not lookup_indices:
         return {}
 
     adjustments: dict[str, tuple[int, int]] = {}
 
-    for li in palt_lookup_indices:
+    for li in lookup_indices:
         lookup = gpos.table.LookupList.Lookup[li]
         lookup_type = lookup.LookupType
 
@@ -190,8 +246,12 @@ def _read_palt(font: TTFont) -> dict[str, tuple[int, int]]:
         # Unwrap Extension lookups (type 9)
         if lookup_type == 9:
             subtables = [st.ExtSubTable for st in subtables]
+        elif lookup_type != 1:
+            continue
 
         for subtable in subtables:
+            if not hasattr(subtable, "Coverage") or subtable.Coverage is None:
+                continue
             glyphs = subtable.Coverage.glyphs
             for j, glyph_name in enumerate(glyphs):
                 if subtable.Format == 1:
@@ -203,9 +263,9 @@ def _read_palt(font: TTFont) -> dict[str, tuple[int, int]]:
                 else:
                     continue
 
-                xp = getattr(v, "XPlacement", 0) or 0
-                xa = getattr(v, "XAdvance", 0) or 0
-                adjustments[glyph_name] = (xp, xa)
+                placement = getattr(v, placement_attr, 0) or 0
+                advance = getattr(v, advance_attr, 0) or 0
+                adjustments[glyph_name] = (placement, advance)
 
     return adjustments
 
@@ -254,9 +314,9 @@ def _remove_prop_features(font: TTFont) -> None:
     remapped — the helpers ``_filter_feature_indices`` and
     ``_remap_feature_indices`` handle the two halves of that update.
 
-    Lookup tables aren't touched: the lookups behind palt may also be
-    referenced by other features we want to keep, and orphaned lookups
-    are harmless. fontTools will write them out unchanged.
+    Lookup tables are pruned after feature removal, but only for lookups no
+    longer referenced by surviving features. If a palt lookup is shared by a
+    kept feature, it stays referenced and is not removed.
     """
     gpos = font.get("GPOS")
     if gpos is None or gpos.table is None:
@@ -304,6 +364,8 @@ def _remove_prop_features(font: TTFont) -> None:
                 for lsr in script.LangSysRecord:
                     _remap_feature_indices(lsr.LangSys, remap)
 
+    _prune_unreferenced_lookups(gpos.table)
+
 
 def _filter_feature_indices(langsys, indices_to_remove: set) -> None:
     """Remove feature indices from a LangSys."""
@@ -321,6 +383,162 @@ def _remap_feature_indices(langsys, remap: dict) -> None:
             remap[i] for i in langsys.FeatureIndex if i in remap
         ]
         langsys.FeatureCount = len(langsys.FeatureIndex)
+
+
+def _prune_unreferenced_lookups(table) -> None:
+    """Remove GPOS lookups not referenced by surviving features."""
+    if table.LookupList is None or table.FeatureList is None:
+        return
+
+    lookups = table.LookupList.Lookup
+    used = set()
+    for feature_record in table.FeatureList.FeatureRecord:
+        used.update(feature_record.Feature.LookupListIndex or [])
+
+    if used == set(range(len(lookups))):
+        return
+
+    kept = sorted(used)
+    remap = {old: new for new, old in enumerate(kept)}
+    table.LookupList.Lookup = [lookups[i] for i in kept]
+    table.LookupList.LookupCount = len(table.LookupList.Lookup)
+
+    for feature_record in table.FeatureList.FeatureRecord:
+        feature = feature_record.Feature
+        feature.LookupListIndex = [
+            remap[i] for i in feature.LookupListIndex if i in remap
+        ]
+        feature.LookupCount = len(feature.LookupListIndex)
+
+
+def _install_palt_feature(
+    font: TTFont,
+    adjustments: dict[str, tuple[int, int]],
+) -> None:
+    """Install a fresh SinglePos palt feature for ``adjustments``.
+
+    The build pipeline reads palt values from the original variable font
+    because instantiated statics can carry stale ValueRecords. Rebuilding the
+    palt feature from that canonical data is simpler and safer than trying to
+    preserve and prune the original lookup tree.
+    """
+    _install_single_pos_feature(
+        font,
+        "palt",
+        adjustments,
+        "XPlacement",
+        "XAdvance",
+        0x0001 | 0x0004,
+    )
+
+
+def _install_vpal_feature(
+    font: TTFont,
+    adjustments: dict[str, tuple[int, int]],
+) -> None:
+    """Install a fresh SinglePos vpal feature for ``adjustments``."""
+    _install_single_pos_feature(
+        font,
+        "vpal",
+        adjustments,
+        "YPlacement",
+        "YAdvance",
+        0x0002 | 0x0008,
+    )
+
+
+def _install_single_pos_feature(
+    font: TTFont,
+    feature_tag: str,
+    adjustments: dict[str, tuple[int, int]],
+    placement_attr: str,
+    advance_attr: str,
+    value_format: int,
+) -> None:
+    """Install a fresh SinglePos feature for ``adjustments``."""
+    if not adjustments:
+        return
+
+    gpos = font.get("GPOS")
+    if gpos is None or gpos.table is None:
+        return
+
+    table = gpos.table
+    if table.LookupList is None:
+        table.LookupList = otTables.LookupList()
+        table.LookupList.Lookup = []
+        table.LookupList.LookupCount = 0
+    if table.FeatureList is None:
+        table.FeatureList = otTables.FeatureList()
+        table.FeatureList.FeatureRecord = []
+        table.FeatureList.FeatureCount = 0
+
+    glyph_order = {glyph_name: i for i, glyph_name in enumerate(font.getGlyphOrder())}
+    glyphs = [
+        glyph_name for glyph_name in adjustments
+        if glyph_name in glyph_order
+    ]
+    glyphs.sort(key=glyph_order.__getitem__)
+    if not glyphs:
+        return
+
+    coverage = otTables.Coverage()
+    coverage.glyphs = glyphs
+
+    subtable = otTables.SinglePos()
+    subtable.Format = 2
+    subtable.Coverage = coverage
+    subtable.ValueFormat = value_format
+    subtable.Value = []
+    for glyph_name in glyphs:
+        placement, advance = adjustments[glyph_name]
+        value = otTables.ValueRecord()
+        setattr(value, placement_attr, placement)
+        setattr(value, advance_attr, advance)
+        subtable.Value.append(value)
+    subtable.ValueCount = len(subtable.Value)
+
+    lookup = otTables.Lookup()
+    lookup.LookupType = 1  # SinglePos
+    lookup.LookupFlag = 0
+    lookup.SubTable = [subtable]
+    lookup.SubTableCount = 1
+
+    lookup_list = table.LookupList
+    lookup_index = lookup_list.LookupCount
+    lookup_list.Lookup.append(lookup)
+    lookup_list.LookupCount += 1
+
+    feature = otTables.Feature()
+    feature.LookupListIndex = [lookup_index]
+    feature.LookupCount = 1
+
+    feature_record = otTables.FeatureRecord()
+    feature_record.FeatureTag = feature_tag
+    feature_record.Feature = feature
+
+    feature_list = table.FeatureList
+    feature_index = feature_list.FeatureCount
+    feature_list.FeatureRecord.append(feature_record)
+    feature_list.FeatureCount += 1
+
+    if table.ScriptList:
+        for script_record in table.ScriptList.ScriptRecord:
+            script = script_record.Script
+            if script.DefaultLangSys:
+                _append_feature_index(script.DefaultLangSys, feature_index)
+            if script.LangSysRecord:
+                for lsr in script.LangSysRecord:
+                    _append_feature_index(lsr.LangSys, feature_index)
+
+
+def _append_feature_index(langsys, feature_index: int) -> None:
+    """Append ``feature_index`` to a LangSys if it is not already present."""
+    feature_indices = list(langsys.FeatureIndex or [])
+    if feature_index not in feature_indices:
+        feature_indices.append(feature_index)
+    langsys.FeatureIndex = feature_indices
+    langsys.FeatureCount = len(feature_indices)
 
 
 def main():

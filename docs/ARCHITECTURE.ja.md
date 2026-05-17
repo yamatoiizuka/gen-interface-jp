@@ -23,7 +23,7 @@ Gen Interface JP はフォントビルドパイプライン (アプリ/UI なし
         │         metadataMode=inheritBase                │
         │             ↓                                   │
         │   [2/3] Proportionalise — proportional.py       │
-        │         palt → hmtx (グループ別 palt 方針)        │
+        │      palt → hmtx + runtime 役物 palt/vpal       │
         │         tracking (連続記号は除外)              │
         │         + 極端な bbox の除去                    │
         │             ↓                                   │
@@ -32,6 +32,7 @@ Gen Interface JP はフォントビルドパイプライン (アプリ/UI なし
         │         subFont.excludeCodepoints で日本語慣習    │
         │         記号は Noto を維持                        │
         │         metricsSource=sub, manufacturer 刻印     │
+        │         GSUB/GPOS coverage order 正規化          │
         │             ↓                                   │
         │   dist/ttf/  (ファミリー × ウェイトごとに TTF)    │
         │                                                  │
@@ -67,11 +68,11 @@ FAMILIES × WEIGHTS の各組合せに対して:
   → font-baker bake: variable Noto → static TTF
                     inheritBase で designer/OFL/version を継承
                     weight だけを上書き
-  → inst を再読込し、キャッシュした variable から palt 取得
-  → Noto の palt エントリを全量で焼き込み
+  → inst を再読込し、キャッシュした variable から palt/vpal 取得
+  → runtime 役物を除き Noto の palt エントリを全量で焼き込み
     (palt なしグリフはメトリクス維持)
   → make_proportional で palt → hmtx に焼き込み
-    palt/vpal/halt/vhal 削除
+    vpal/halt/vhal を削除し、役物だけの palt/vpal feature を再生成
   → _apply_tracking で advance を広げ LSB を半分シフト
     ただし family["trackingIgnore"] の連続・隙間なし記号は除外
   → _apply_glyph_spacing で family["glyphSpacing"] の個別調整を適用
@@ -85,6 +86,10 @@ FAMILIES × WEIGHTS の各組合せに対して:
                      family/weight を「Gen Interface JP …」に刻印
                      metricsSource=sub で Inter 基準の hhea を採用
                      manufacturer / manufacturerURL を刻印
+  → final TTF を一度 reload/save し、GSUB/GPOS coverage を
+    merge 後の glyph ID 順に正規化
+  → merge 時の glyph rename 後も encoded glyph に live 役物 feature が
+    残るよう、final cmap に対して runtime palt/vpal を再生成
 ```
 
 ### 2. Web 用サブセット化 (`webfont.build`)
@@ -132,16 +137,23 @@ Stage 2 に渡る。
 
 inst に対して 4 つのサブパスを in-place で実行:
 
-1. **palt のベイク** (`proportional.make_proportional`) — palt 値は
+1. **palt のベイク / runtime vpal** (`proportional.make_proportional`) — palt 値は
    キャッシュ済みの variable から読む (instantiation で非デフォルト軸位置の
    palt ValueRecord が壊れることがあるため)。XPlacement / XAdvance を
    LSB / advance に加算しアウトラインをシフト。Noto の palt エントリは
-   すべて全量で焼き込む; tracking-only / full-palt 記号リストのような
-   別分類は持たない。palt なしグリフは自動的に sidebearing を詰めない;
-   後続の明示的な spacing ルールが触らない限り元の `hmtx` を維持する。
+   原則として全量で焼き込むが、`PALT_FEATURE_CHARS` の役物は焼き込まず、
+   live `palt` GPOS feature として再生成する。Noto の `vpal` も同じ
+   variable から読み、`VPAL_FEATURE_CHARS` に列挙した Unicode-mapped
+   役物 33 glyph (縦組み presentation form と全角パーセントを含む) を
+   live `vpal` として再生成する。全角コロン / セミコロンは Noto に palt は
+   あるが vpal がなく、縦組みコロンは unmapped の `glyph17071` に
+   置換されるため、小さな合成 fallback を `SYNTHETIC_VPAL_ADJUSTMENTS` で
+   足す。`vpal` は `hmtx` には焼き込まない。palt なしグリフは自動的に
+   sidebearing を詰めない; 後続の明示的な spacing ルールが触らない限り
+   元の `hmtx` を維持する。
    `U+30FB` (・) は Noto では `U+2027` (‧) と同じ `uni2027` を共有して
-   いるため、palt ベイク前に `uni30FB` として分離する。これにより `‧` は
-   palt + tracking のみ、`・` は明示的な spacing 補正ありとして扱える。
+   いるため、palt ベイク前に `uni30FB` として分離する。これにより `‧` と
+   `・` は必要に応じて別々の live palt record を持てる。
 2. **トラッキング** (`_apply_tracking`) — advance を `tracking` 分広げ、
    `tracking // 2` を LSB に加算してアウトラインを広がった枠の中央に
    配置。kana / 句読点はファミリー設定の `trackingKana` で別値。
@@ -164,9 +176,9 @@ inst に対して 4 つのサブパスを in-place で実行:
    palt 後に詰まり気味に見えるため、このレイヤーで左右に明示的な余白を
    足す。大半の小書き仮名は左右 15 units を基準にしつつ、カタカナの
    小書き「ィ」「ャ」や、ひらがなの小書き「ょ」などは見え方に合わせて
-   個別値を持つ。`U+30FB` (・) は `trackingIgnore` ではなくここで
-   扱う: 他の調整対象の句読点と同じく tracking を通し、Normal family では
-   family-specific な spacing 値で最終 hmtx を従来の目標に合わせる。
+   個別値を持つ。`U+30FB` (・) を含む役物はここでは扱わない: tracking は
+   通常どおり通し、横方向の詰めは live `palt` feature に任せる。縦方向の
+   proportional spacing は別集合の `VPAL_FEATURE_CHARS` で制御する。
 4. **bbox 除去** (`_strip_extreme_glyphs`) — 下記 [垂直メトリクス] 参照。
 
 オプションの **横スケール** (`xScale` 設定、現在未使用) は上記の後に
@@ -193,6 +205,12 @@ font-baker は sub のほうを `uni25CE.sub` にリネームし、base のグ�
 
 `output.manufacturer = "Yamato Iizuka"`、`output.manufacturerURL =
 "https://yamatoiizuka.com"` でリリース TTF の nameID 8 / 11 を刻印。
+merge 後は final TTF を一度 fontTools で reload/save し、GSUB/GPOS coverage を
+最終 glyph order に合わせて正規化する。その後、merge 前に codepoint keyed で
+保持した最小 runtime `palt` / `vpal` を final cmap に対して再生成する。
+これは `U+FF40` (｀) のように、Noto では `U+2035` と同じ `uni2035`
+を共有するが、Inter 側の `U+2035` と衝突して merge 後に
+`uni2035.orig` へ rename される glyph で必要になる。
 
 ## プロポーショナルメトリクス (`font/proportional.py`)
 
@@ -202,17 +220,31 @@ em-square を占有し、`palt` GPOS が runtime に kana / Latin を光学的�
 フォールバック、CJK を等幅扱いするレイアウトエンジン) ではこの調整が
 効かず、全角ピッチで組まれてしまう。
 
-`make_proportional` は `palt` を static の `hmtx` に焼き込み、その上で
-`palt` / `vpal` / `halt` / `vhal` を削除する — `palt` を効かせるアプリで
-二重適用されるのを防ぐため。TrueType アウトラインのみ対応 (palt のベイクは
-`glyf` に書き戻すので CFF は対象外)。
+`make_proportional` は多くの `palt` 値を static の `hmtx` に焼き込む。
+`runtime_palt` が指定されたグリフはベイク対象から外し、いったん
+`palt` / `vpal` / `halt` / `vhal` を削除した後、そのグリフ集合だけの
+新しい `palt` feature を追加する。`runtime_vpal` が指定された場合は、
+一致する Noto `vpal` record も水平メトリクスに触らず新しい `vpal`
+feature として戻す。ビルドでは runtime `palt` に `PALT_FEATURE_CHARS`
+(48 文字)、runtime `vpal` に `VPAL_FEATURE_CHARS` (33 文字) を使う。
+Noto の vpal には縦組み presentation form と `％` が含まれるため、
+この 2 つの集合は意図的に一致させない。`SYNTHETIC_VPAL_ADJUSTMENTS` は
+Noto が持たない全角コロン / セミコロンの縦方向 proportional record を補う。
+これにより、焼き込み済みの kana / Latin に palt が二重適用されることを
+避けながら、選択した役物だけ runtime palt/vpal を公開できる。
+TrueType アウトラインのみ対応 (palt のベイクは `glyf` に書き戻すので
+CFF は対象外)。
+Inter との merge では base 側 glyph が rename されることがあるため、
+ビルドは merge 前に runtime palt/vpal 値を codepoint 単位で保持し、
+merge 後の final cmap に対して再インストールする。
 
 `_remove_prop_features` は GPOS を 2 段で歩く: FeatureRecord の削除と、
 それに対応する LangSys インデックスの再マップ。レコード削除は後ろの全
 レコードのインデックスを動かすので、各 LangSys の `FeatureIndex` 配列を
-生き残ったレコードに対して再キーする必要がある。Lookup テーブル本体は
-触らない — palt の lookup は他の残す機能からも参照される可能性があり、
-孤立した lookup は無害なのでそのまま。
+生き残ったレコードに対して再キーする必要がある。feature 削除後は、どの
+生存 feature からも参照されない lookup だけを pruning する; 共有 lookup は
+残す。再生成した runtime-palt/vpal lookup は削除後に追加し、既存の各
+LangSys から参照させる。`kern` は GPOS に残る。
 
 ## 垂直メトリクスと Illustrator のテキストボックス問題
 
@@ -358,7 +390,7 @@ PYTHONPATH=src python3 -m pytest        # 全テスト (~0.6 秒)
 
 テストは表面ごとに `tests/` 直下に分割:
 
-- **`tests/conftest.py`** — 共有フィクスチャ: 実 palt / vert / cmap データ
+- **`tests/conftest.py`** — 共有フィクスチャ: 実 palt / vpal / vert / cmap データ
   が必要なテスト用に Noto Variable のサブセットをセッション単位でキャッシュ;
   全グリフ走査が必要な mutation テスト用には `FontBuilder` で組み立てた
   最小 TrueType (Noto 17000 グリフを毎回触るのは無駄)。
@@ -366,13 +398,13 @@ PYTHONPATH=src python3 -m pytest        # 全テスト (~0.6 秒)
   `_is_cjk_codepoint`, `_is_kana_letter`, `_get_cjk_glyphs`,
   `_get_vert_alternates`, `_apply_x_scale`, `_strip_extreme_glyphs`,
   `_apply_tracking`, `_apply_glyph_spacing`, `_glyphs_for_codepoints`,
-  `_split_cmap_codepoint_glyph`, `_get_variable_palt`、明示的な palt
-  spacing 方針。
-- **`tests/test_proportional.py`** — `_read_palt`, `_shift_glyph_x`,
-  `_remove_prop_features`, `make_proportional` (palt ベイク、reduced palt
-  scale、palt なしグリフのメトリクス維持、オプションの squeeze SB
-  sidebearing 計算、palt_override の優先、CFF 拒否、feature 削除後の
-  LangSys index 整合性)。
+  `_split_cmap_codepoint_glyph`, `_get_variable_palt`, `_get_variable_vpal`、
+  明示的な palt/vpal spacing 方針。
+- **`tests/test_proportional.py`** — `_read_palt`, `_read_vpal`,
+  `_shift_glyph_x`, `_remove_prop_features`, `make_proportional` (palt
+  ベイク、runtime-palt/vpal 再生成、reduced palt scale、palt なしグリフの
+  メトリクス維持、オプションの squeeze SB sidebearing 計算、
+  palt_override の優先、CFF 拒否、feature 削除後の LangSys index 整合性)。
 - **`tests/test_release.py`** — 公開配布の契約: GitHub アセット URL の形
   (サイトのダウンロードボタンが参照)、npm パッケージのレイアウト
   (`files` glob、生成 README、`cdn/*.css` エントリポイント、`license`
@@ -384,8 +416,8 @@ PYTHONPATH=src python3 -m pytest        # 全テスト (~0.6 秒)
 
 | ファイル | テスト数 | 検証内容 |
 |---|---|---|
-| `test_font_build.py` | 81 | グリフ名パース、kana / CJK 分類、GSUB 走査、x-scale、bbox 除去、tracking |
-| `test_proportional.py` | 20 | palt 抽出、グリフ平行移動、GPOS feature 削除、reduced-palt 方針 + optional squeeze helper |
+| `test_font_build.py` | 90 | グリフ名パース、kana / CJK 分類、GSUB/GPOS 走査、x-scale、bbox 除去、tracking、runtime feature の retarget |
+| `test_proportional.py` | 28 | palt/vpal 抽出、グリフ平行移動、GPOS feature 削除、runtime-palt/vpal 再生成 + optional squeeze helper |
 | `test_release.py` | 2 | GitHub アセット URL 契約、npm パッケージレイアウト (files glob、license、README、self-host/CDN CSS root 配置) |
 | `test_webfont_build.py` | 42 | 範囲マージ / 重複除去、5 桁 hex 含む unicode-range、JIS 区マッピング、サブセット計画の配置 / 非重複 / 完全カバレッジ、ストラテジーパーサーのエッジケース |
 
