@@ -69,7 +69,8 @@ For each (family, weight) in FAMILIES × WEIGHTS:
                     inheritBase passes designer/OFL/version
                     through; only weight is stamped
   → reload inst, read palt/vpal from cached variable font
-  → bake Noto palt at full strength except runtime yakumono
+  → bake Noto palt at full strength except runtime yakumono,
+    whose palt is split into a 34% baked base + 66% live feature
     (glyphs without palt keep metrics)
   → make_proportional bakes palt → hmtx, removes vpal/halt/vhal,
     and reinstalls yakumono-only palt/vpal features
@@ -141,7 +142,11 @@ Four sub-passes, all in-place on the inst:
    ValueRecords at non-default axis positions). XPlacement/XAdvance pairs
    are added to LSB / advance, outlines shifted. Most Noto palt entries are
    baked at full strength, but yakumono listed in `PALT_FEATURE_CHARS`
-   is left unbaked and reinstalled as a live `palt` GPOS feature. Noto
+   is split: 34% of the palt adjustment is baked into `hmtx` so the glyph is
+   still tightened when `palt` is disabled, and the remaining 66% is
+   reinstalled as a live `palt` GPOS feature. For Noto's common
+   `XAdvance=-500` yakumono records, that means palt-off gets `-170` baked
+   into the base advance and palt-on applies the remaining `-330`. Noto
    `vpal` is read from the same variable source and reinstalled for the
    Unicode-mapped yakumono listed in `VPAL_FEATURE_CHARS` (33 glyphs,
    including vertical presentation forms and fullwidth percent). Fullwidth
@@ -224,12 +229,18 @@ CJK fonts ship full-width: every glyph occupies the same em-square
 regardless of outline width, with `palt` GPOS narrowing kana / Latin
 optically at runtime. Apps that don't enable `palt` (Adobe's Japanese
 composer, browser fallbacks, anything treating CJK as monospaced for
-layout) miss those adjustments and lay out at full-width spacing.
+layout) miss those live adjustments. Gen Interface JP avoids a fully
+monospaced fallback by baking most palt values directly into `hmtx`, and by
+baking a reduced palt fraction for runtime yakumono.
 
 `make_proportional` bakes most `palt` values into the static `hmtx` so the
-font reads proportional everywhere. When `runtime_palt` is provided, those
-glyphs are skipped during baking; after `palt` / `vpal` / `halt` / `vhal`
-are stripped, a fresh `palt` feature is installed for just that glyph set.
+font reads proportional everywhere. When `runtime_palt` is provided together
+with `runtime_palt_base_scale`, the build bakes that fraction of each runtime
+record into the base metrics and installs only the residual delta as live
+`palt` after `palt` / `vpal` / `halt` / `vhal` are stripped. The project uses
+`RUNTIME_PALT_BASE_SCALE = 0.34`, so palt-off yakumono is already partially
+tightened (`-170` for the common `-500` palt advance) while enabling `palt`
+still reaches the full Noto palt target.
 When `runtime_vpal` is provided, matching Noto `vpal` records are also
 reinstalled as a fresh `vpal` feature without affecting horizontal metrics.
 The build uses `PALT_FEATURE_CHARS` (48 chars) for runtime `palt` and
@@ -413,8 +424,8 @@ Tests live under `tests/`, split by surface:
   and the explicit palt/vpal spacing policy.
 - **`tests/test_proportional.py`** — `_read_palt`, `_read_vpal`,
   `_shift_glyph_x`, `_remove_prop_features`, `make_proportional` (palt
-  baking, runtime-palt/vpal reinstall, reduced palt scaling, non-palt metric
-  preservation, optional squeeze SB sidebearing math, palt_override
+  baking, runtime-palt/vpal reinstall, runtime-palt base/residual splitting,
+  reduced palt scaling, non-palt metric preservation, optional squeeze SB sidebearing math, palt_override
   precedence, CFF rejection, LangSys index validity post-removal).
 - **`tests/test_release.py`** — public distribution contracts: GitHub
   asset URL shape (referenced by the site download button), npm package
@@ -427,8 +438,8 @@ Tests live under `tests/`, split by surface:
 
 | File | Tests | Verifies |
 |---|---|---|
-| `test_font_build.py` | 90 | Glyph-name parsing, kana / CJK classification, GSUB/GPOS walk, x-scale, bbox strip, tracking, runtime feature retargeting |
-| `test_proportional.py` | 28 | palt/vpal extraction, glyph translation, GPOS feature removal, runtime-palt/vpal reinstall + optional squeeze helper |
+| `test_font_build.py` | 91 | Glyph-name parsing, kana / CJK classification, GSUB/GPOS walk, x-scale, bbox strip, tracking, runtime feature retargeting |
+| `test_proportional.py` | 29 | palt/vpal extraction, glyph translation, GPOS feature removal, runtime-palt/vpal reinstall + base/residual split + optional squeeze helper |
 | `test_release.py` | 2 | GitHub asset URL contract, npm package layout (files glob, license, README, self-host/CDN CSS entrypoints at root) |
 | `test_webfont_build.py` | 42 | Range merge / dedup, unicode-range formatting incl. 5-digit, JIS row mapping, subset plan placement / non-overlap / coverage, strategy parser edge cases |
 

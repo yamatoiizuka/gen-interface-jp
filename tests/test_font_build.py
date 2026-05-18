@@ -28,12 +28,14 @@ from font.build import (
     _is_kana_or_punct,
     _retarget_feature_adjustments,
     _retarget_named_adjustments,
+    _runtime_palt_residual_adjustment,
     _split_cmap_codepoint_glyph,
     _strip_extreme_glyphs,
     DISPLAY_PALT_SPACE_ADJUSTMENTS,
     NORMAL_PALT_SPACE_ADJUSTMENTS,
     PALT_FEATURE_CHARS,
     PALT_SPACE_ADJUSTMENTS,
+    RUNTIME_PALT_BASE_SCALE,
     SUB_EXCLUDE_CODEPOINTS,
     SYNTHETIC_VPAL_ADJUSTMENTS,
     TRACKING_IGNORE_CODEPOINTS,
@@ -541,7 +543,7 @@ class TestApplyTracking:
 # ---------------------------------------------------------------------------
 
 class TestPaltSymbolPolicy:
-    """Full palt is baked by default; selected yakumono remains runtime palt."""
+    """Full palt is baked by default; selected yakumono keeps split runtime palt."""
 
     def test_tracking_only_symbols_are_implicit_palt_entries(self):
         palt = _get_variable_palt()
@@ -575,6 +577,11 @@ class TestPaltSymbolPolicy:
         ):
             assert char in PALT_FEATURE_CHARS
             assert char not in PALT_SPACE_ADJUSTMENTS
+
+    def test_runtime_palt_keeps_reduced_base_metrics(self):
+        assert RUNTIME_PALT_BASE_SCALE == 0.34
+        assert _runtime_palt_residual_adjustment((-250, -500)) == (-165, -330)
+        assert _runtime_palt_residual_adjustment((-70, -140)) == (-46, -92)
 
     def test_noto_vpal_yakumono_uses_separate_runtime_target_set(self):
         vpal = _get_variable_vpal()

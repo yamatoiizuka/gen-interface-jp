@@ -35,6 +35,7 @@ from .proportional import (
     _install_palt_feature,
     _install_vpal_feature,
     _remove_prop_features,
+    _scale_position_adjustment,
     make_proportional,
 )
 
@@ -97,6 +98,11 @@ PALT_FEATURE_CHARS = (
     "〒", "＂", "＃", "＄", "＆",
     "＇", "＊", "＾", "｀", "￥",
 )
+
+# Runtime palt yakumono still need a reasonably tight default when callers do
+# not enable palt. Bake this fraction into hmtx, then expose only the remaining
+# palt delta as the live feature.
+RUNTIME_PALT_BASE_SCALE = 0.34
 
 # Unicode-mapped Noto vpal yakumono records kept as a live vertical
 # proportional feature. This intentionally differs from PALT_FEATURE_CHARS:
@@ -711,6 +717,28 @@ def _feature_adjustments_for_codepoints(
     }
 
 
+def _runtime_palt_residual_adjustment(
+    adjustment: tuple[int, int],
+) -> tuple[int, int]:
+    """Return the live palt delta after the default base fraction is baked."""
+    base_placement, base_advance = _scale_position_adjustment(
+        adjustment,
+        RUNTIME_PALT_BASE_SCALE,
+    )
+    placement, advance = adjustment
+    return (placement - base_placement, advance - base_advance)
+
+
+def _runtime_palt_residuals_by_codepoint(
+    adjustments: dict[int, tuple[int, int]],
+) -> dict[int, tuple[int, int]]:
+    """Convert full palt records to residual records for final reinstall."""
+    return {
+        cp: _runtime_palt_residual_adjustment(adjustment)
+        for cp, adjustment in adjustments.items()
+    }
+
+
 def _retarget_feature_adjustments(
     font: TTFont,
     adjustments_by_codepoint: dict[int, tuple[int, int]],
@@ -1018,10 +1046,12 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
         if glyph_name in font.getGlyphOrder():
             vpal_data[glyph_name] = value
             runtime_vpal_glyphs.add(glyph_name)
-    runtime_palt_by_codepoint = _feature_adjustments_for_codepoints(
-        font,
-        runtime_palt_chars,
-        palt_data,
+    runtime_palt_by_codepoint = _runtime_palt_residuals_by_codepoint(
+        _feature_adjustments_for_codepoints(
+            font,
+            runtime_palt_chars,
+            palt_data,
+        )
     )
     runtime_vpal_by_codepoint = _feature_adjustments_for_codepoints(
         font,
@@ -1029,13 +1059,14 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
         vpal_data,
     )
 
-    # Bake Noto palt entries at full strength except yakumono that should
-    # remain live palt/vpal features. Glyphs without palt keep their
-    # original hmtx.
+    # Bake Noto palt entries at full strength except runtime yakumono, which
+    # receive a reduced baked base plus a live residual palt feature. Glyphs
+    # without palt keep their original hmtx.
     make_proportional(
         font,
         palt_override=palt_data,
         runtime_palt=runtime_palt_glyphs,
+        runtime_palt_base_scale=RUNTIME_PALT_BASE_SCALE,
         vpal_override=vpal_data,
         runtime_vpal=runtime_vpal_glyphs,
     )
