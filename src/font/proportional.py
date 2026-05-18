@@ -12,10 +12,11 @@ full-width spacing.
 
 This module bakes most ``palt`` values into the static hmtx so the font
 reads as proportional everywhere. A caller may keep a small glyph set as a
-live runtime ``palt`` / ``vpal`` feature; those glyphs are not baked, and
-fresh lookups are installed for them after the redundant proportional
-features are removed. Glyphs not covered by ``palt`` keep their original
-metrics — nothing is forced.
+live runtime ``palt`` / ``vpal`` feature; palt glyphs can either stay
+unbaked or split into a baked base fraction plus a live residual feature.
+Fresh lookups are installed after the redundant proportional features are
+removed. Glyphs not covered by ``palt`` keep their original metrics —
+nothing is forced.
 
 Usage:
     python3 -m font.proportional INPUT.ttf OUTPUT.ttf
@@ -38,6 +39,15 @@ from fontTools.ttLib.tables import otTables
 PROP_FEATURES = {"palt", "vpal", "halt", "vhal"}
 
 
+def _scale_position_adjustment(
+    adjustment: tuple[int, int],
+    scale: float,
+) -> tuple[int, int]:
+    """Scale an OpenType placement/advance pair with design-unit rounding."""
+    placement, advance = adjustment
+    return (round(placement * scale), round(advance * scale))
+
+
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
@@ -50,6 +60,7 @@ def make_proportional(
     squeeze_sb_scale: float | None = None,
     palt_override: dict[str, tuple[int, int]] | None = None,
     runtime_palt: set[str] | None = None,
+    runtime_palt_base_scale: float = 0.0,
     vpal_override: dict[str, tuple[int, int]] | None = None,
     runtime_vpal: set[str] | None = None,
 ) -> None:
@@ -75,11 +86,12 @@ def make_proportional(
     been corrupted by variable instantiation. Variable→static baking can
     leave palt ValueRecords with zeroed XPlacement/XAdvance pairs.
 
-    ``runtime_palt`` leaves selected palt-covered glyphs unbaked and
-    reinstalls only those glyphs as a live ``palt`` feature. This lets a
-    final font expose palt for a narrow target set (e.g. yakumono)
-    without double-applying palt to kana / Latin glyphs that were already
-    baked into hmtx.
+    ``runtime_palt`` leaves selected palt-covered glyphs available as a live
+    ``palt`` feature. By default those glyphs are not baked. When
+    ``runtime_palt_base_scale`` is non-zero, that fraction is baked into the
+    base hmtx and only the remaining delta is reinstalled as live ``palt``.
+    This lets selected yakumono stay somewhat tight when ``palt`` is disabled
+    while preserving the full palt result when it is enabled.
 
     ``vpal_override`` / ``runtime_vpal`` mirror that runtime feature path
     for vertical proportional metrics. ``vpal`` is not baked into hmtx; when
@@ -94,17 +106,15 @@ def make_proportional(
 
     if squeeze_sb_scale is None:
         squeeze_sb_scale = reduced_palt_scale
+    if not 0 <= runtime_palt_base_scale <= 1:
+        raise ValueError("runtime_palt_base_scale must be between 0 and 1")
 
     runtime_palt = runtime_palt or set()
     runtime_vpal = runtime_vpal or set()
 
     # Extract palt adjustments before removing features
     palt_adjustments = palt_override if palt_override is not None else _read_palt(font)
-    runtime_palt_adjustments = {
-        glyph_name: value
-        for glyph_name, value in palt_adjustments.items()
-        if glyph_name in runtime_palt
-    }
+    runtime_palt_adjustments = {}
     vpal_adjustments = vpal_override if vpal_override is not None else _read_vpal(font)
     runtime_vpal_adjustments = {
         glyph_name: value
@@ -118,14 +128,31 @@ def make_proportional(
     # ── Apply palt adjustments ──
     for glyph_name, (x_placement, x_advance) in palt_adjustments.items():
         if glyph_name in runtime_palt:
-            continue
-        if glyph_name not in hmtx.metrics:
+            if runtime_palt_base_scale == 0:
+                runtime_palt_adjustments[glyph_name] = (x_placement, x_advance)
+                continue
+            if glyph_name not in hmtx.metrics:
+                runtime_palt_adjustments[glyph_name] = (x_placement, x_advance)
+                continue
+            base_x_placement, base_x_advance = _scale_position_adjustment(
+                (x_placement, x_advance),
+                runtime_palt_base_scale,
+            )
+            runtime_palt_adjustments[glyph_name] = (
+                x_placement - base_x_placement,
+                x_advance - base_x_advance,
+            )
+            x_placement = base_x_placement
+            x_advance = base_x_advance
+        elif glyph_name not in hmtx.metrics:
             continue
 
         # Reduced palt: apply a fraction of the adjustment
-        if reduced_palt and glyph_name in reduced_palt:
-            x_placement = round(x_placement * reduced_palt_scale)
-            x_advance = round(x_advance * reduced_palt_scale)
+        if glyph_name not in runtime_palt and reduced_palt and glyph_name in reduced_palt:
+            x_placement, x_advance = _scale_position_adjustment(
+                (x_placement, x_advance),
+                reduced_palt_scale,
+            )
 
         aw, lsb = hmtx[glyph_name]
 

@@ -257,6 +257,36 @@ class TestMakeProportional:
         assert "palt" in tags
         assert not ({"vpal", "halt", "vhal"} & tags)
 
+    def test_runtime_palt_can_bake_base_fraction_and_reinstall_residual(self, noto_subset):
+        cmap = noto_subset.getBestCmap()
+        punct_glyph = cmap.get(0x3001)  # 、
+        palt = _read_palt(noto_subset)
+        if punct_glyph not in palt:
+            import pytest
+            pytest.skip("subset palt does not cover U+3001")
+
+        before_aw, before_lsb = noto_subset["hmtx"][punct_glyph]
+        x_placement, x_advance = palt[punct_glyph]
+        base_x_placement = round(x_placement * 0.34)
+        base_x_advance = round(x_advance * 0.34)
+
+        make_proportional(
+            noto_subset,
+            runtime_palt={punct_glyph},
+            runtime_palt_base_scale=0.34,
+        )
+
+        assert noto_subset["hmtx"][punct_glyph] == (
+            before_aw + base_x_advance,
+            before_lsb + base_x_placement,
+        )
+        assert _read_palt(noto_subset) == {
+            punct_glyph: (
+                x_placement - base_x_placement,
+                x_advance - base_x_advance,
+            )
+        }
+
     def test_runtime_palt_and_vpal_can_be_reinstalled_together(self, noto_subset):
         cmap = noto_subset.getBestCmap()
         punct_glyph = cmap.get(0x30FB)  # ・
