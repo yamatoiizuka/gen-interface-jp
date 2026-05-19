@@ -10,7 +10,9 @@ vendor/fonts/
   Noto_Sans_JP/
 ```
 
-`src/font/build.py` は Inter の static TTF を `Inter-4.1/extras/ttf/` から、Noto Sans JP の variable font を `Noto_Sans_JP/NotoSansJP-VariableFont_wght.ttf` から読み込みます。
+`src/font/build.py` は Inter の大半の static TTF を `Inter-4.1/extras/ttf/` から読み込みます。
+Thin と ExtraBold は Latin 側の太さを調整するため `Inter-4.1/InterVariable.ttf` から生成し、公開 metadata は 100 / 800 のままにします。
+Noto Sans JP は `Noto_Sans_JP/NotoSansJP-VariableFont_wght.ttf` から読み込みます。
 
 ## 使われ方
 

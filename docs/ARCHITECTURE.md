@@ -12,6 +12,7 @@ consumes the published webfont package.
 │  Source                                                            │
 │    vendor/fonts/Inter-4.1/extras/ttf/Inter-{Weight}.ttf            │
 │    vendor/fonts/Inter-4.1/extras/ttf/InterDisplay-{Weight}.ttf     │
+│    vendor/fonts/Inter-4.1/InterVariable.ttf                        │
 │    vendor/fonts/Noto_Sans_JP/NotoSansJP-VariableFont_wght.ttf      │
 └─────────────────────────────┬──────────────────────────────────────┘
                               │
@@ -67,6 +68,14 @@ consumes the published webfont package.
 
 ```
 For each (family, weight) in FAMILIES × WEIGHTS:
+  → choose Inter source:
+      - ExtraLight through Bold use vendor static Inter/InterDisplay TTFs
+      - Thin and ExtraBold are instantiated from InterVariable.ttf:
+          Gen Interface JP         : opsz=14, wght=125 / 775
+          Gen Interface JP Display : opsz=32, wght=125 / 775
+        The generated static instances are stamped back to usWeightClass
+        100 / 800 so output metadata follows the public weight names, not
+        the internal wght-axis coordinates.
   → font-baker bake: variable Noto → static TTF
                     inheritBase passes designer/OFL/version
                     through; only weight is stamped
@@ -82,7 +91,7 @@ For each (family, weight) in FAMILIES × WEIGHTS:
   → _apply_glyph_spacing applies family["glyphSpacing"] sidebearing tweaks
   → _strip_extreme_glyphs neutralises vertical iteration marks 〱-〵
     (1000-UPM design thresholds: yMax > 1200 / yMin < -400)
-  → font-baker merge: Inter + proportional Noto
+  → font-baker merge: Inter source + proportional Noto
                      subFont.excludeCodepoints = SUB_EXCLUDE_CODEPOINTS
                      keeps CJK-conventional symbols on Noto;
                      font-baker also auto-renames glyph-name collisions

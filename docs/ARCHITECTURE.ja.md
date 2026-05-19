@@ -12,6 +12,7 @@ Gen Interface JP はフォントビルドパイプライン (アプリ/UI なし
 │  Source                                                            │
 │    vendor/fonts/Inter-4.1/extras/ttf/Inter-{Weight}.ttf            │
 │    vendor/fonts/Inter-4.1/extras/ttf/InterDisplay-{Weight}.ttf     │
+│    vendor/fonts/Inter-4.1/InterVariable.ttf                        │
 │    vendor/fonts/Noto_Sans_JP/NotoSansJP-VariableFont_wght.ttf      │
 └─────────────────────────────┬──────────────────────────────────────┘
                               │
@@ -67,6 +68,14 @@ Gen Interface JP はフォントビルドパイプライン (アプリ/UI なし
 
 ```
 FAMILIES × WEIGHTS の各組合せに対して:
+  → Inter source を選択:
+      - ExtraLight から Bold は vendor の static Inter/InterDisplay TTF
+      - Thin と ExtraBold は InterVariable.ttf から static instance を生成:
+          Gen Interface JP         : opsz=14, wght=125 / 775
+          Gen Interface JP Display : opsz=32, wght=125 / 775
+        生成後の static instance は usWeightClass 100 / 800 に戻し、
+        公開ウェイト名の metadata が内部 wght 座標に引きずられない
+        ようにする。
   → font-baker bake: variable Noto → static TTF
                     inheritBase で designer/OFL/version を継承
                     weight だけを上書き
@@ -82,7 +91,7 @@ FAMILIES × WEIGHTS の各組合せに対して:
   → _apply_glyph_spacing で family["glyphSpacing"] の個別調整を適用
   → _strip_extreme_glyphs で縦組み用繰り返し記号 〱-〵 を無効化
     (1000-UPM 設計値: yMax > 1200 / yMin < -400)
-  → font-baker merge: Inter + proportional Noto
+  → font-baker merge: Inter source + proportional Noto
                      subFont.excludeCodepoints = SUB_EXCLUDE_CODEPOINTS で
                      日本語慣習記号 (① Ⓐ ※ ◯ …) は Noto を維持
                      glyph-name collision (Inter U+0298 と Noto U+25CE が
