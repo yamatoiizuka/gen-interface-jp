@@ -300,6 +300,16 @@ INTER_VARIABLE_EDGE_WEIGHTS = {
     },
 }
 
+STATIC_INSTANCE_VARIATION_TABLES = (
+    "fvar",
+    "gvar",
+    "avar",
+    "HVAR",
+    "MVAR",
+    "VVAR",
+    "STAT",
+)
+
 
 def _axis_value_slug(value: float) -> str:
     """Return a stable filename fragment for an axis coordinate."""
@@ -385,14 +395,21 @@ def _build_inter_variable_instance(
     out_path = _inter_variable_instance_path(family, weight_name, axes, out_dir)
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
 
-    font = TTFont(INTER_VARIABLE)
-    font = instancer.instantiateVariableFont(font, axes, inplace=False)
-    font["OS/2"].usWeightClass = weight_num
-    _set_inter_static_names(font, family["interFamilyName"], weight_name)
-    if "STAT" in font:
-        del font["STAT"]
-    font.save(out_path)
-    font.close()
+    variable_font = TTFont(INTER_VARIABLE)
+    try:
+        font = instancer.instantiateVariableFont(variable_font, axes, inplace=False)
+    finally:
+        variable_font.close()
+
+    try:
+        font["OS/2"].usWeightClass = weight_num
+        _set_inter_static_names(font, family["interFamilyName"], weight_name)
+        for table_tag in STATIC_INSTANCE_VARIATION_TABLES:
+            if table_tag in font:
+                del font[table_tag]
+        font.save(out_path)
+    finally:
+        font.close()
     return out_path
 
 

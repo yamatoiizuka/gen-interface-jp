@@ -53,6 +53,7 @@ from font.build import (
     PALT_SPACE_ADJUSTMENTS,
     RUNTIME_PALT_BASE_SCALE,
     SOURCE_UPM,
+    STATIC_INSTANCE_VARIATION_TABLES,
     SUB_EXCLUDE_CODEPOINTS,
     SYNTHETIC_VPAL_ADJUSTMENTS,
     TARGET_UPM,
@@ -178,9 +179,8 @@ class TestInterVariableEdgeInstances:
                 f"-wght{expected_wght}-opsz{expected_opsz}.ttf"
             )
             assert generated["OS/2"].usWeightClass == weight_num
-            assert "fvar" not in generated
-            assert "gvar" not in generated
-            assert "STAT" not in generated
+            for table in STATIC_INSTANCE_VARIATION_TABLES:
+                assert table not in generated
 
             names = {
                 record.nameID: record.toUnicode()
@@ -192,6 +192,7 @@ class TestInterVariableEdgeInstances:
 
             assert generated.getGlyphOrder() == variable.getGlyphOrder()
             assert set(generated.getBestCmap() or {}) == set(variable.getBestCmap() or {})
+            assert set(generated.getBestCmap() or {}) == set(vendor_static.getBestCmap() or {})
             assert _layout_feature_tags(generated, "GSUB") == _layout_feature_tags(variable, "GSUB")
             assert _layout_feature_tags(generated, "GPOS") == _layout_feature_tags(variable, "GPOS")
             assert _layout_feature_tags(generated, "GSUB") == _layout_feature_tags(vendor_static, "GSUB")
@@ -205,17 +206,29 @@ class TestInterVariableEdgeInstances:
             variable.close()
             vendor_static.close()
 
-    def test_normal_and_display_edge_instances_use_distinct_opsz(self, tmp_path):
+    @pytest.mark.parametrize(
+        "weight_num,weight_name",
+        [
+            (100, "Thin"),
+            (800, "ExtraBold"),
+        ],
+    )
+    def test_normal_and_display_edge_instances_use_distinct_opsz(
+        self,
+        tmp_path,
+        weight_num,
+        weight_name,
+    ):
         normal_path = _build_inter_variable_instance(
             FAMILIES["normal"],
-            100,
-            "Thin",
+            weight_num,
+            weight_name,
             str(tmp_path),
         )
         display_path = _build_inter_variable_instance(
             FAMILIES["display"],
-            100,
-            "Thin",
+            weight_num,
+            weight_name,
             str(tmp_path),
         )
         normal = TTFont(normal_path)
