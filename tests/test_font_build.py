@@ -35,6 +35,7 @@ from font.build import (
     _runtime_palt_residual_adjustment,
     _scale_design_adjustment,
     _scale_design_adjustments,
+    _scale_feature_adjustments,
     _scale_design_unit,
     _scale_glyph_spacing,
     _split_cmap_codepoint_glyph,
@@ -650,6 +651,26 @@ class TestPaltSymbolPolicy:
         assert RUNTIME_PALT_BASE_SCALE == 0.34
         assert _runtime_palt_residual_adjustment((-250, -500)) == (-165, -330)
         assert _runtime_palt_residual_adjustment((-70, -140)) == (-46, -92)
+
+    def test_scales_final_runtime_feature_adjustments_by_optical_scale(self):
+        adjustments = {
+            0x3001: (-512, -1024),
+            0x3002: (100, -200),
+        }
+
+        assert _scale_feature_adjustments(adjustments, 0.925) == {
+            0x3001: (round(-512 * 0.925), round(-1024 * 0.925)),
+            0x3002: (round(100 * 0.925), round(-200 * 0.925)),
+        }
+
+    def test_scales_glyph_keyed_final_runtime_feature_adjustments(self):
+        adjustments = {
+            "uniFE10": (-512, -1024),
+        }
+
+        assert _scale_feature_adjustments(adjustments, 0.925) == {
+            "uniFE10": (round(-512 * 0.925), round(-1024 * 0.925)),
+        }
 
     def test_noto_vpal_yakumono_uses_separate_runtime_target_set(self):
         vpal = _get_variable_vpal()

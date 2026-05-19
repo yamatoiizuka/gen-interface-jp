@@ -248,7 +248,9 @@ Then the minimal runtime `palt` / `vpal` features are rebuilt one final
 time from codepoint-keyed records captured before the merge. This matters
 for shared Noto glyphs such as `U+FF40` (｀), which uses Noto's `uni2035`
 before merge but may be renamed to `uni2035.orig` when Inter also provides
-`U+2035`.
+`U+2035`. Because this reinstall happens after the final merge, the saved
+feature records are also scaled by `SCALE` so their live placement/advance
+values match the optically scaled Noto base.
 
 ## Proportional Metrics (`font/proportional.py`)
 
@@ -281,7 +283,10 @@ runtime palt/vpal for selected yakumono. Only TrueType outlines are supported
 — palt baking writes back to `glyf`, not CFF.
 Because the Inter merge can rename colliding base glyphs, the build captures
 runtime palt/vpal values by codepoint before the merge and reinstalls them
-against the final cmap afterward.
+against the final cmap afterward. Those reinstalled records are scaled by
+the final Noto optical scale (`SCALE = 0.925`) at reinstall time only; the
+pre-merge `palt_data` / `vpal_data` remain on the active UPM grid so baked
+base metrics are scaled exactly once by the merge.
 
 `_remove_prop_features` walks GPOS in two coordinated passes:
 FeatureRecord deletions and the corresponding LangSys index remap.
@@ -471,7 +476,7 @@ Tests live under `tests/`, split by surface:
 
 | File | Tests | Verifies |
 |---|---|---|
-| `test_font_build.py` | 98 | UPM scaling policy, project-version metadata forwarding, glyph-name parsing, kana / CJK classification, GSUB/GPOS walk, x-scale, bbox strip, tracking, runtime feature retargeting |
+| `test_font_build.py` | 100 | UPM scaling policy, project-version metadata forwarding, glyph-name parsing, kana / CJK classification, GSUB/GPOS walk, x-scale, bbox strip, tracking, runtime feature retargeting, final runtime feature scaling |
 | `test_proportional.py` | 29 | palt/vpal extraction, glyph translation, GPOS feature removal, runtime-palt/vpal reinstall + base/residual split + optional squeeze helper |
 | `test_release.py` | 2 | GitHub asset URL contract, npm package layout (files glob, license, README, self-host/CDN CSS entrypoints at root) |
 | `test_webfont_build.py` | 42 | Range merge / dedup, unicode-range formatting incl. 5-digit, JIS row mapping, subset plan placement / non-overlap / coverage, strategy parser edge cases |

@@ -828,6 +828,17 @@ def _runtime_palt_residuals_by_codepoint(
     }
 
 
+def _scale_feature_adjustments(
+    adjustments: dict[int | str, tuple[int, int]],
+    scale: float,
+) -> dict[int | str, tuple[int, int]]:
+    """Scale codepoint- or glyph-keyed OpenType placement/advance records."""
+    return {
+        key: _scale_position_adjustment(value, scale)
+        for key, value in adjustments.items()
+    }
+
+
 def _retarget_feature_adjustments(
     font: TTFont,
     adjustments_by_codepoint: dict[int, tuple[int, int]],
@@ -1233,9 +1244,9 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
     _normalize_layout_coverage_order(final_path)
     _refresh_runtime_prop_features_after_merge(
         final_path,
-        runtime_palt_by_codepoint,
-        runtime_vpal_by_codepoint,
-        synthetic_vpal_adjustments,
+        _scale_feature_adjustments(runtime_palt_by_codepoint, SCALE),
+        _scale_feature_adjustments(runtime_vpal_by_codepoint, SCALE),
+        _scale_feature_adjustments(synthetic_vpal_adjustments, SCALE),
     )
     return {
         "fontPath": final_path,
