@@ -241,7 +241,9 @@ merge 後は final TTF を一度 fontTools で reload/save し、GSUB/GPOS cover
 保持した最小 runtime `palt` / `vpal` を final cmap に対して再生成する。
 これは `U+FF40` (｀) のように、Noto では `U+2035` と同じ `uni2035`
 を共有するが、Inter 側の `U+2035` と衝突して merge 後に
-`uni2035.orig` へ rename される glyph で必要になる。
+`uni2035.orig` へ rename される glyph で必要になる。この再生成は final merge
+後に行うため、保持していた feature record も `SCALE` で換算し、live の
+placement / advance が光学スケール済みの Noto base と揃うようにする。
 
 ## プロポーショナルメトリクス (`font/proportional.py`)
 
@@ -273,7 +275,10 @@ TrueType アウトラインのみ対応 (palt のベイクは `glyf` に書き�
 CFF は対象外)。
 Inter との merge では base 側 glyph が rename されることがあるため、
 ビルドは merge 前に runtime palt/vpal 値を codepoint 単位で保持し、
-merge 後の final cmap に対して再インストールする。
+merge 後の final cmap に対して再インストールする。再インストールする record
+には final Noto optical scale (`SCALE = 0.925`) をこの時点でだけ掛ける。
+pre-merge の `palt_data` / `vpal_data` は active UPM grid のままにし、焼き込み
+base metrics は merge 時に一度だけ scale される。
 
 `_remove_prop_features` は GPOS を 2 段で歩く: FeatureRecord の削除と、
 それに対応する LangSys インデックスの再マップ。レコード削除は後ろの全
@@ -460,7 +465,7 @@ PYTHONPATH=src python3 -m pytest        # 全テスト (~0.6 秒)
 
 | ファイル | テスト数 | 検証内容 |
 |---|---|---|
-| `test_font_build.py` | 98 | UPM 換算ポリシー、project-version metadata forwarding、グリフ名パース、kana / CJK 分類、GSUB/GPOS 走査、x-scale、bbox 除去、tracking、runtime feature の retarget |
+| `test_font_build.py` | 100 | UPM 換算ポリシー、project-version metadata forwarding、グリフ名パース、kana / CJK 分類、GSUB/GPOS 走査、x-scale、bbox 除去、tracking、runtime feature の retarget、final runtime feature scaling |
 | `test_proportional.py` | 29 | palt/vpal 抽出、グリフ平行移動、GPOS feature 削除、runtime-palt/vpal 再生成 + base/residual 分割 + optional squeeze helper |
 | `test_release.py` | 2 | GitHub アセット URL 契約、npm パッケージレイアウト (files glob、license、README、self-host/CDN CSS root 配置) |
 | `test_webfont_build.py` | 42 | 範囲マージ / 重複除去、5 桁 hex 含む unicode-range、JIS 区マッピング、サブセット計画の配置 / 非重複 / 完全カバレッジ、ストラテジーパーサーのエッジケース |
