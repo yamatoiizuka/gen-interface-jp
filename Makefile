@@ -11,7 +11,7 @@ NPM_PUBLISH_FLAGS ?= --access public
 NPM_CACHE ?= $(CURDIR)/.npm-cache
 
 .PHONY: all clean \
-        font \
+        font verify-edge-instances \
         webfont webfont-benchmark \
         release npm-pack npm-publish-dry-run npm-publish \
         site serve
@@ -28,6 +28,10 @@ all: release
 # `make webfont` (subset WOFF2 served via unicode-range), not full WOFF2.
 font:
 	$(PY) -m font.build
+
+verify-edge-instances:
+	$(PY) -m font.build all Thin ExtraBold
+	$(PY) -m font.verify_edge_instances
 
 
 # ---------------------------------------------------------------------------

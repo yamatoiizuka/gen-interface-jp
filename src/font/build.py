@@ -30,6 +30,7 @@ import sys
 
 from fontTools.ttLib import TTFont
 from fontTools.ttLib.reorderGlyphs import reorderGlyphs
+from fontTools.varLib import instancer
 from merge_fonts import merge_fonts, parse_codepoint_list
 from project_metadata import project_version as read_project_version
 from .proportional import (
@@ -107,11 +108,13 @@ def _assert_target_upm(font: TTFont, path: str) -> None:
 # (output_weight, weight_name, noto_wght_axis_value)
 #
 # The third column is the wght-axis location used to instantiate Noto Sans JP.
-# Inter's discrete static masters happen to live at the round 100/200/.../800
-# positions, but Noto's variable axis is non-linear: pulling the axis at 400
-# yields a CJK weight that visually reads lighter than Inter Regular. The
-# values below were tuned by eye-matching CJK stem density to each Inter
-# master, hence the off-grid numbers (e.g. 465 for Regular, 800 for Bold).
+# Most Latin sources use Inter's discrete static masters. Thin and ExtraBold
+# are special-cased below to use InterVariable instances at wght=125/775 while
+# keeping public metadata at 100/800. Noto's variable axis is non-linear:
+# pulling the axis at 400 yields a CJK weight that visually reads lighter than
+# Inter Regular. The values below were tuned by eye-matching CJK stem density
+# to each Latin master, hence the off-grid numbers (e.g. 465 for Regular,
+# 800 for Bold).
 WEIGHTS = [
     (100, "Thin",       100),
     (200, "ExtraLight",  260),
@@ -236,6 +239,8 @@ FAMILIES = {
     "normal": {
         "familyName": "Gen Interface JP",
         "interPrefix": "Inter",
+        "interFamilyName": "Inter",
+        "interOpsz": 14,
         "tracking": NORMAL_TRACKING,
         "trackingKana": NORMAL_TRACKING_KANA,
         "trackingIgnore": TRACKING_IGNORE_CODEPOINTS,
@@ -255,6 +260,8 @@ FAMILIES = {
     "display": {
         "familyName": "Gen Interface JP Display",
         "interPrefix": "InterDisplay",
+        "interFamilyName": "Inter Display",
+        "interOpsz": 32,
         "tracking": DISPLAY_TRACKING,
         "trackingKana": DISPLAY_TRACKING_KANA,
         "trackingIgnore": TRACKING_IGNORE_CODEPOINTS,
@@ -275,10 +282,147 @@ FAMILIES = {
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 VENDOR_FONTS = os.path.join(ROOT, "vendor", "fonts")
 INTER_DIR = os.path.join(VENDOR_FONTS, "Inter-4.1", "extras", "ttf")
+INTER_VARIABLE = os.path.join(VENDOR_FONTS, "Inter-4.1", "InterVariable.ttf")
 NOTO_VARIABLE = os.path.join(VENDOR_FONTS, "Noto_Sans_JP", "NotoSansJP-VariableFont_wght.ttf")
 DIST = os.path.join(ROOT, "dist")
 DIST_TTF = os.path.join(DIST, "ttf")
 INTERMEDIATE = os.path.join(DIST, "intermediate")
+
+
+INTER_VARIABLE_EDGE_WEIGHTS = {
+    "Thin": {
+        "wght": 125,
+        "outputWeight": 100,
+    },
+    "ExtraBold": {
+        "wght": 775,
+        "outputWeight": 800,
+    },
+}
+
+STATIC_INSTANCE_VARIATION_TABLES = (
+    "fvar",
+    "gvar",
+    "avar",
+    "HVAR",
+    "MVAR",
+    "VVAR",
+    "STAT",
+)
+
+
+def _axis_value_slug(value: float) -> str:
+    """Return a stable filename fragment for an axis coordinate."""
+    if float(value).is_integer():
+        return str(int(value))
+    return str(value).replace(".", "p")
+
+
+def _default_inter_static_path(family: dict, weight_name: str) -> str:
+    """Return the vendor static Inter path for a family/weight."""
+    return os.path.join(INTER_DIR, f"{family['interPrefix']}-{weight_name}.ttf")
+
+
+def _name_record_value(record, value: str) -> None:
+    """Replace a name record while preserving its platform encoding."""
+    record.string = value.encode(record.getEncoding(), errors="replace")
+
+
+def _set_inter_static_names(font: TTFont, family_name: str, weight_name: str) -> None:
+    """Stamp static Inter instance name records to match vendor statics."""
+    legacy_family = f"{family_name} {weight_name}"
+    postscript_family = family_name.replace(" ", "")
+    replacements = {
+        1: legacy_family,
+        2: "Regular",
+        4: legacy_family,
+        6: f"{postscript_family}-{weight_name}",
+        16: family_name,
+        17: weight_name,
+    }
+    name_table = font["name"]
+    name_table.names = [
+        record for record in name_table.names
+        if record.nameID != 25
+    ]
+    for record in name_table.names:
+        value = replacements.get(record.nameID)
+        if value is not None:
+            _name_record_value(record, value)
+    for name_id, value in replacements.items():
+        name_table.setName(value, name_id, 3, 1, 0x409)
+        name_table.setName(value, name_id, 1, 0, 0)
+
+
+def _inter_variable_instance_path(
+    family: dict,
+    weight_name: str,
+    axes: dict[str, float],
+    out_dir: str = INTERMEDIATE,
+) -> str:
+    """Return the generated static Inter instance path."""
+    instance_dir = os.path.join(out_dir, "InterVariable")
+    return os.path.join(
+        instance_dir,
+        (
+            f"{family['interPrefix']}-{weight_name}"
+            f"-wght{_axis_value_slug(axes['wght'])}"
+            f"-opsz{_axis_value_slug(axes['opsz'])}.ttf"
+        ),
+    )
+
+
+def _build_inter_variable_instance(
+    family: dict,
+    weight_num: int,
+    weight_name: str,
+    out_dir: str = INTERMEDIATE,
+) -> str:
+    """Instantiate InterVariable for the tuned Thin/ExtraBold Latin masters."""
+    config = INTER_VARIABLE_EDGE_WEIGHTS[weight_name]
+    expected_weight = config["outputWeight"]
+    if weight_num != expected_weight:
+        raise ValueError(
+            f"{weight_name} variable instance must be stamped as "
+            f"usWeightClass {expected_weight}, got {weight_num}."
+        )
+    axes = {
+        "wght": config["wght"],
+        "opsz": family["interOpsz"],
+    }
+    if not os.path.isfile(INTER_VARIABLE):
+        raise FileNotFoundError(f"Inter variable font not found: {INTER_VARIABLE}")
+    out_path = _inter_variable_instance_path(family, weight_name, axes, out_dir)
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+
+    variable_font = TTFont(INTER_VARIABLE)
+    try:
+        font = instancer.instantiateVariableFont(variable_font, axes, inplace=False)
+    finally:
+        variable_font.close()
+
+    try:
+        font["OS/2"].usWeightClass = weight_num
+        _set_inter_static_names(font, family["interFamilyName"], weight_name)
+        for table_tag in STATIC_INSTANCE_VARIATION_TABLES:
+            if table_tag in font:
+                del font[table_tag]
+        font.save(out_path)
+    finally:
+        font.close()
+    return out_path
+
+
+def _inter_source_path(
+    family: dict,
+    weight_num: int,
+    weight_name: str,
+    out_dir: str = INTERMEDIATE,
+) -> str:
+    """Return the Inter sub-font source, generating edge instances as needed."""
+    if weight_name in INTER_VARIABLE_EDGE_WEIGHTS:
+        return _build_inter_variable_instance(family, weight_num, weight_name, out_dir)
+    return _default_inter_static_path(family, weight_name)
 
 
 def _project_version() -> str:
@@ -1078,11 +1222,11 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
        URL plus the project version get stamped into the final name/head
        metadata.
     """
-    inter_path = os.path.join(INTER_DIR, f"{family['interPrefix']}-{weight_name}.ttf")
+    os.makedirs(INTERMEDIATE, exist_ok=True)
+
+    inter_path = _inter_source_path(family, weight_num, weight_name)
     if not os.path.isfile(inter_path):
         raise FileNotFoundError(f"Inter font not found: {inter_path}")
-
-    os.makedirs(INTERMEDIATE, exist_ok=True)
 
     inst_path = os.path.join(INTERMEDIATE, f"NotoSansJP-{weight_name}-Inst.ttf")
     prop_path = os.path.join(INTERMEDIATE, f"NotoSansJP-{weight_name}-Prop.ttf")

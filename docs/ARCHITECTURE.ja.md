@@ -12,6 +12,7 @@ Gen Interface JP はフォントビルドパイプライン (アプリ/UI なし
 │  Source                                                            │
 │    vendor/fonts/Inter-4.1/extras/ttf/Inter-{Weight}.ttf            │
 │    vendor/fonts/Inter-4.1/extras/ttf/InterDisplay-{Weight}.ttf     │
+│    vendor/fonts/Inter-4.1/InterVariable.ttf                        │
 │    vendor/fonts/Noto_Sans_JP/NotoSansJP-VariableFont_wght.ttf      │
 └─────────────────────────────┬──────────────────────────────────────┘
                               │
@@ -67,6 +68,14 @@ Gen Interface JP はフォントビルドパイプライン (アプリ/UI なし
 
 ```
 FAMILIES × WEIGHTS の各組合せに対して:
+  → Inter source を選択:
+      - ExtraLight から Bold は vendor の static Inter/InterDisplay TTF
+      - Thin と ExtraBold は InterVariable.ttf から static instance を生成:
+          Gen Interface JP         : opsz=14, wght=125 / 775
+          Gen Interface JP Display : opsz=32, wght=125 / 775
+        生成後の static instance は usWeightClass 100 / 800 に戻し、
+        公開ウェイト名の metadata が内部 wght 座標に引きずられない
+        ようにする。
   → font-baker bake: variable Noto → static TTF
                     inheritBase で designer/OFL/version を継承
                     weight だけを上書き
@@ -82,7 +91,7 @@ FAMILIES × WEIGHTS の各組合せに対して:
   → _apply_glyph_spacing で family["glyphSpacing"] の個別調整を適用
   → _strip_extreme_glyphs で縦組み用繰り返し記号 〱-〵 を無効化
     (1000-UPM 設計値: yMax > 1200 / yMin < -400)
-  → font-baker merge: Inter + proportional Noto
+  → font-baker merge: Inter source + proportional Noto
                      subFont.excludeCodepoints = SUB_EXCLUDE_CODEPOINTS で
                      日本語慣習記号 (① Ⓐ ※ ◯ …) は Noto を維持
                      glyph-name collision (Inter U+0298 と Noto U+25CE が
@@ -431,7 +440,7 @@ GitHub Pages のデプロイは `.github/workflows/pages.yml`
 ## テスト
 
 ```bash
-PYTHONPATH=src python3 -m pytest        # 全テスト (~0.6 秒)
+PYTHONPATH=src python3 -m pytest        # 全テスト (~20 秒)
 ```
 
 テストは表面ごとに `tests/` 直下に分割:
@@ -447,7 +456,13 @@ PYTHONPATH=src python3 -m pytest        # 全テスト (~0.6 秒)
   `_get_vert_alternates`, `_apply_x_scale`, `_strip_extreme_glyphs`,
   `_apply_tracking`, `_apply_glyph_spacing`, `_glyphs_for_codepoints`,
   `_split_cmap_codepoint_glyph`, `_get_variable_palt`, `_get_variable_vpal`、
-  明示的な palt/vpal spacing 方針。
+  明示的な palt/vpal spacing 方針、Thin / ExtraBold 用の InterVariable
+  edge instance source 選択。
+- **`src/font/verify_edge_instances.py`** — Thin / ExtraBold のビルド後検証。
+  生成された InterVariable static instance が vendor static と同じ cmap /
+  GSUB / GPOS 表面を保ち、variation table を残さず、指定 `wght` / `opsz`
+  座標になっていること、さらに final TTF の metadata が public weight
+  100 / 800 のままで InterVariable axis 名を漏らさないことを確認する。
 - **`tests/test_proportional.py`** — `_read_palt`, `_read_vpal`,
   `_shift_glyph_x`, `_remove_prop_features`, `make_proportional` (palt
   ベイク、runtime-palt/vpal 再生成、runtime-palt の base/residual 分割、
@@ -465,7 +480,7 @@ PYTHONPATH=src python3 -m pytest        # 全テスト (~0.6 秒)
 
 | ファイル | テスト数 | 検証内容 |
 |---|---|---|
-| `test_font_build.py` | 100 | UPM 換算ポリシー、project-version metadata forwarding、グリフ名パース、kana / CJK 分類、GSUB/GPOS 走査、x-scale、bbox 除去、tracking、runtime feature の retarget、final runtime feature scaling |
+| `test_font_build.py` | 107 | UPM 換算ポリシー、project-version metadata forwarding、グリフ名パース、kana / CJK 分類、GSUB/GPOS 走査、x-scale、bbox 除去、tracking、runtime feature の retarget、final runtime feature scaling、InterVariable edge instance 互換性 |
 | `test_proportional.py` | 29 | palt/vpal 抽出、グリフ平行移動、GPOS feature 削除、runtime-palt/vpal 再生成 + base/residual 分割 + optional squeeze helper |
 | `test_release.py` | 2 | GitHub アセット URL 契約、npm パッケージレイアウト (files glob、license、README、self-host/CDN CSS root 配置) |
 | `test_webfont_build.py` | 42 | 範囲マージ / 重複除去、5 桁 hex 含む unicode-range、JIS 区マッピング、サブセット計画の配置 / 非重複 / 完全カバレッジ、ストラテジーパーサーのエッジケース |
@@ -475,6 +490,7 @@ PYTHONPATH=src python3 -m pytest        # 全テスト (~0.6 秒)
 | コマンド | 用途 |
 |---|---|
 | `make font` | 全ファミリー × 全ウェイトの TTF を生成 |
+| `make verify-edge-instances` | Thin / ExtraBold をビルドし、InterVariable edge instance と final TTF metadata を検証 |
 | `make webfont` | unicode-range サブセットを生成 (`font` 依存) |
 | `make release` | GitHub zip + npm + Pages パッケージ生成 (`webfont` 依存) |
 | `make webfont-benchmark` | スライス方式の throttled fetch ベンチ |
@@ -484,6 +500,7 @@ PYTHONPATH=src python3 -m pytest        # 全テスト (~0.6 秒)
 | `make serve` | サイトのローカル Vite 開発サーバー |
 | `make clean` | `dist/` と `site/dist/` を削除 |
 | `python3 -m font.build [family] [weight ...]` | 部分ビルド (例: `normal Regular`) |
+| `python3 -m font.verify_edge_instances` | ビルド済み Thin / ExtraBold edge output を検証 |
 | `python3 -m pytest` | テスト実行 |
 
 CI: `.github/workflows/pages.yml` が `main` への push ごとにデモサイトを

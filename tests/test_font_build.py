@@ -10,6 +10,7 @@ import re
 from pathlib import Path
 
 import pytest
+from fontTools.ttLib import TTFont
 
 from font.build import (
     _apply_glyph_spacing,
@@ -40,12 +41,19 @@ from font.build import (
     _scale_glyph_spacing,
     _split_cmap_codepoint_glyph,
     _strip_extreme_glyphs,
+    _build_inter_variable_instance,
+    _default_inter_static_path,
+    _inter_source_path,
     DISPLAY_PALT_SPACE_ADJUSTMENTS,
+    FAMILIES,
+    INTER_VARIABLE,
+    INTER_VARIABLE_EDGE_WEIGHTS,
     NORMAL_PALT_SPACE_ADJUSTMENTS,
     PALT_FEATURE_CHARS,
     PALT_SPACE_ADJUSTMENTS,
     RUNTIME_PALT_BASE_SCALE,
     SOURCE_UPM,
+    STATIC_INSTANCE_VARIATION_TABLES,
     SUB_EXCLUDE_CODEPOINTS,
     SYNTHETIC_VPAL_ADJUSTMENTS,
     TARGET_UPM,
@@ -53,6 +61,16 @@ from font.build import (
     VPAL_FEATURE_CHARS,
 )
 from merge_fonts import parse_codepoint_list
+
+
+def _layout_feature_tags(font: TTFont, table_tag: str) -> set[str]:
+    """Return GSUB/GPOS feature tags from a font."""
+    if table_tag not in font:
+        return set()
+    feature_list = font[table_tag].table.FeatureList
+    if feature_list is None:
+        return set()
+    return {record.FeatureTag for record in feature_list.FeatureRecord}
 
 
 # ---------------------------------------------------------------------------
@@ -110,6 +128,123 @@ class TestProjectVersionMetadata:
         assert output["metricsSource"] == "sub"
         assert output["upm"] == TARGET_UPM
         assert output["version"] == "1.2.3"
+
+
+# ---------------------------------------------------------------------------
+# Inter variable edge instances
+# ---------------------------------------------------------------------------
+
+class TestInterVariableEdgeInstances:
+    """Thin/ExtraBold use tuned InterVariable instances, then static metadata."""
+
+    @pytest.mark.parametrize(
+        "family_key,weight_num,weight_name,expected_wght,expected_opsz,expected_family",
+        [
+            ("normal", 100, "Thin", 125, 14, "Inter"),
+            ("display", 100, "Thin", 125, 32, "Inter Display"),
+            ("normal", 800, "ExtraBold", 775, 14, "Inter"),
+            ("display", 800, "ExtraBold", 775, 32, "Inter Display"),
+        ],
+    )
+    def test_builds_edge_instance_with_static_metadata_and_full_layout(
+        self,
+        tmp_path,
+        family_key,
+        weight_num,
+        weight_name,
+        expected_wght,
+        expected_opsz,
+        expected_family,
+    ):
+        if not Path(INTER_VARIABLE).is_file():
+            pytest.skip(f"Inter variable font not found at {INTER_VARIABLE}")
+
+        family = FAMILIES[family_key]
+        assert family["interOpsz"] == expected_opsz
+        assert INTER_VARIABLE_EDGE_WEIGHTS[weight_name]["wght"] == expected_wght
+
+        generated_path = _build_inter_variable_instance(
+            family,
+            weight_num,
+            weight_name,
+            str(tmp_path),
+        )
+        generated = TTFont(generated_path)
+        variable = TTFont(INTER_VARIABLE)
+        vendor_static = TTFont(_default_inter_static_path(family, weight_name))
+
+        try:
+            assert generated_path.endswith(
+                f"{family['interPrefix']}-{weight_name}"
+                f"-wght{expected_wght}-opsz{expected_opsz}.ttf"
+            )
+            assert generated["OS/2"].usWeightClass == weight_num
+            for table in STATIC_INSTANCE_VARIATION_TABLES:
+                assert table not in generated
+
+            names = {
+                record.nameID: record.toUnicode()
+                for record in generated["name"].names
+                if record.platformID == 3 and record.platEncID in (1, 10)
+            }
+            assert names[16] == expected_family
+            assert names[17] == weight_name
+
+            assert generated.getGlyphOrder() == variable.getGlyphOrder()
+            assert set(generated.getBestCmap() or {}) == set(variable.getBestCmap() or {})
+            assert set(generated.getBestCmap() or {}) == set(vendor_static.getBestCmap() or {})
+            assert _layout_feature_tags(generated, "GSUB") == _layout_feature_tags(variable, "GSUB")
+            assert _layout_feature_tags(generated, "GPOS") == _layout_feature_tags(variable, "GPOS")
+            assert _layout_feature_tags(generated, "GSUB") == _layout_feature_tags(vendor_static, "GSUB")
+            assert _layout_feature_tags(generated, "GPOS") == _layout_feature_tags(vendor_static, "GPOS")
+
+            generated_a = generated["glyf"]["A"]
+            static_a = vendor_static["glyf"]["A"]
+            assert (generated_a.xMin, generated_a.xMax) != (static_a.xMin, static_a.xMax)
+        finally:
+            generated.close()
+            variable.close()
+            vendor_static.close()
+
+    @pytest.mark.parametrize(
+        "weight_num,weight_name",
+        [
+            (100, "Thin"),
+            (800, "ExtraBold"),
+        ],
+    )
+    def test_normal_and_display_edge_instances_use_distinct_opsz(
+        self,
+        tmp_path,
+        weight_num,
+        weight_name,
+    ):
+        normal_path = _build_inter_variable_instance(
+            FAMILIES["normal"],
+            weight_num,
+            weight_name,
+            str(tmp_path),
+        )
+        display_path = _build_inter_variable_instance(
+            FAMILIES["display"],
+            weight_num,
+            weight_name,
+            str(tmp_path),
+        )
+        normal = TTFont(normal_path)
+        display = TTFont(display_path)
+
+        try:
+            assert normal["hmtx"]["H"] != display["hmtx"]["H"]
+        finally:
+            normal.close()
+            display.close()
+
+    def test_middle_weights_still_use_vendor_static_inter(self, tmp_path):
+        family = FAMILIES["normal"]
+        assert _inter_source_path(family, 400, "Regular", str(tmp_path)) == (
+            _default_inter_static_path(family, "Regular")
+        )
 
 
 # ---------------------------------------------------------------------------

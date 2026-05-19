@@ -12,6 +12,7 @@ consumes the published webfont package.
 │  Source                                                            │
 │    vendor/fonts/Inter-4.1/extras/ttf/Inter-{Weight}.ttf            │
 │    vendor/fonts/Inter-4.1/extras/ttf/InterDisplay-{Weight}.ttf     │
+│    vendor/fonts/Inter-4.1/InterVariable.ttf                        │
 │    vendor/fonts/Noto_Sans_JP/NotoSansJP-VariableFont_wght.ttf      │
 └─────────────────────────────┬──────────────────────────────────────┘
                               │
@@ -67,6 +68,14 @@ consumes the published webfont package.
 
 ```
 For each (family, weight) in FAMILIES × WEIGHTS:
+  → choose Inter source:
+      - ExtraLight through Bold use vendor static Inter/InterDisplay TTFs
+      - Thin and ExtraBold are instantiated from InterVariable.ttf:
+          Gen Interface JP         : opsz=14, wght=125 / 775
+          Gen Interface JP Display : opsz=32, wght=125 / 775
+        The generated static instances are stamped back to usWeightClass
+        100 / 800 so output metadata follows the public weight names, not
+        the internal wght-axis coordinates.
   → font-baker bake: variable Noto → static TTF
                     inheritBase passes designer/OFL/version
                     through; only weight is stamped
@@ -82,7 +91,7 @@ For each (family, weight) in FAMILIES × WEIGHTS:
   → _apply_glyph_spacing applies family["glyphSpacing"] sidebearing tweaks
   → _strip_extreme_glyphs neutralises vertical iteration marks 〱-〵
     (1000-UPM design thresholds: yMax > 1200 / yMin < -400)
-  → font-baker merge: Inter + proportional Noto
+  → font-baker merge: Inter source + proportional Noto
                      subFont.excludeCodepoints = SUB_EXCLUDE_CODEPOINTS
                      keeps CJK-conventional symbols on Noto;
                      font-baker also auto-renames glyph-name collisions
@@ -443,7 +452,7 @@ GitHub Pages deploys the build via `.github/workflows/pages.yml`.
 ## Tests
 
 ```bash
-PYTHONPATH=src python3 -m pytest        # full suite (~0.6s)
+PYTHONPATH=src python3 -m pytest        # full suite (~20s)
 ```
 
 Tests live under `tests/`, split by surface:
@@ -459,7 +468,14 @@ Tests live under `tests/`, split by surface:
   `_get_vert_alternates`, `_apply_x_scale`, `_strip_extreme_glyphs`,
   `_apply_tracking`, `_apply_glyph_spacing`, `_glyphs_for_codepoints`,
   `_split_cmap_codepoint_glyph`, `_get_variable_palt`, `_get_variable_vpal`,
-  and the explicit palt/vpal spacing policy.
+  explicit palt/vpal spacing policy, and InterVariable edge-instance source
+  selection for Thin / ExtraBold.
+- **`src/font/verify_edge_instances.py`** — post-build verification for
+  Thin / ExtraBold edge outputs. Confirms the generated InterVariable static
+  instances keep the vendor static cmap / GSUB / GPOS surface, contain no
+  variation tables, use the requested `wght` / `opsz` coordinates, and that
+  final TTF metadata stays at public weights 100 / 800 without leaking
+  InterVariable axis names.
 - **`tests/test_proportional.py`** — `_read_palt`, `_read_vpal`,
   `_shift_glyph_x`, `_remove_prop_features`, `make_proportional` (palt
   baking, runtime-palt/vpal reinstall, runtime-palt base/residual splitting,
@@ -476,7 +492,7 @@ Tests live under `tests/`, split by surface:
 
 | File | Tests | Verifies |
 |---|---|---|
-| `test_font_build.py` | 100 | UPM scaling policy, project-version metadata forwarding, glyph-name parsing, kana / CJK classification, GSUB/GPOS walk, x-scale, bbox strip, tracking, runtime feature retargeting, final runtime feature scaling |
+| `test_font_build.py` | 107 | UPM scaling policy, project-version metadata forwarding, glyph-name parsing, kana / CJK classification, GSUB/GPOS walk, x-scale, bbox strip, tracking, runtime feature retargeting, final runtime feature scaling, InterVariable edge-instance compatibility |
 | `test_proportional.py` | 29 | palt/vpal extraction, glyph translation, GPOS feature removal, runtime-palt/vpal reinstall + base/residual split + optional squeeze helper |
 | `test_release.py` | 2 | GitHub asset URL contract, npm package layout (files glob, license, README, self-host/CDN CSS entrypoints at root) |
 | `test_webfont_build.py` | 42 | Range merge / dedup, unicode-range formatting incl. 5-digit, JIS row mapping, subset plan placement / non-overlap / coverage, strategy parser edge cases |
@@ -486,6 +502,7 @@ Tests live under `tests/`, split by surface:
 | Command | Purpose |
 |---|---|
 | `make font` | Build TTF for both families × all weights |
+| `make verify-edge-instances` | Build Thin / ExtraBold and verify InterVariable edge instance + final TTF metadata |
 | `make webfont` | Build unicode-range subsets (depends on `font`) |
 | `make release` | Build GitHub zips + npm + Pages package (depends on `webfont`) |
 | `make webfont-benchmark` | Throttled fetch benchmark of slicing strategy |
@@ -495,6 +512,7 @@ Tests live under `tests/`, split by surface:
 | `make serve` | Local Vite dev server for the site |
 | `make clean` | Remove `dist/` and `site/dist/` |
 | `python3 -m font.build [family] [weight ...]` | Build a slice (e.g. `normal Regular`) |
+| `python3 -m font.verify_edge_instances` | Verify built Thin / ExtraBold edge outputs |
 | `python3 -m pytest` | Run the test suite |
 
 CI: `.github/workflows/pages.yml` deploys the demo site to GitHub Pages
