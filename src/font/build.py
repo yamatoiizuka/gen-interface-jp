@@ -4,15 +4,15 @@ Build Gen Interface JP font families.
 
 Shared pipeline per weight:
   1. Bake Noto Sans JP variable → static TTF  (font-baker, base-only,
-                                                metadataMode=inheritBase
-                                                so Noto's name/OS2 survive)
+                                                metadataMode=inheritBase,
+                                                output.upm=2048)
   2. Convert to proportional metrics           (palt-based, proportional.py)
   3. Apply tracking                            (LSB +half, RSB +half)
   4. Merge Inter/InterDisplay + proportional Noto  (font-baker, with
      subFont.excludeCodepoints to keep CJK-conventional symbols on Noto)
 
 Families:
-  - Gen Interface JP         : Inter       + proportional Noto, tracking +30 (kana/punct +40)
+  - Gen Interface JP         : Inter       + proportional Noto, tracking +30 (kana/punct +40) at 1000 UPM
   - Gen Interface JP Display : InterDisplay + proportional Noto, tracking +0
 
 Outputs TTF into dist/ttf/. Web delivery (subset WOFF2 chunks served via
@@ -38,6 +38,65 @@ from .proportional import (
     _scale_position_adjustment,
     make_proportional,
 )
+
+
+# ---------------------------------------------------------------------------
+# UPM policy
+# ---------------------------------------------------------------------------
+
+# Noto Sans JP's source data is 1000 UPM, but Inter / Inter Display are 2048
+# UPM. Bake Noto intermediates and final merged fonts at Inter's native UPM so
+# Latin outlines and metrics do not get rounded down to the Noto grid.
+SOURCE_UPM = 1000
+TARGET_UPM = 2048
+
+
+def _scale_design_unit(value: int, target_upm: int = TARGET_UPM) -> int:
+    """Scale a project design-unit value from Noto's 1000 UPM grid."""
+    return round(value * target_upm / SOURCE_UPM)
+
+
+def _scale_design_adjustment(
+    adjustment: tuple[int, int],
+    target_upm: int = TARGET_UPM,
+) -> tuple[int, int]:
+    """Scale a two-value OpenType adjustment from the 1000 UPM design grid."""
+    first, second = adjustment
+    return (_scale_design_unit(first, target_upm), _scale_design_unit(second, target_upm))
+
+
+def _scale_design_adjustments(
+    adjustments: dict[str, tuple[int, int]],
+    target_upm: int = TARGET_UPM,
+) -> dict[str, tuple[int, int]]:
+    """Scale glyph-keyed palt/vpal adjustment records from 1000 UPM."""
+    return {
+        glyph_name: _scale_design_adjustment(adjustment, target_upm)
+        for glyph_name, adjustment in adjustments.items()
+    }
+
+
+def _scale_glyph_spacing(
+    spacing: dict | None,
+    target_upm: int = TARGET_UPM,
+) -> dict | None:
+    """Scale codepoint-keyed sidebearing adjustments from 1000 UPM."""
+    if not spacing:
+        return spacing
+    return {
+        key: _scale_design_adjustment(deltas, target_upm)
+        for key, deltas in spacing.items()
+    }
+
+
+def _assert_target_upm(font: TTFont, path: str) -> None:
+    """Fail clearly if a build stage did not produce Inter-native UPM."""
+    upm = font["head"].unitsPerEm
+    if upm != TARGET_UPM:
+        raise RuntimeError(
+            f"Expected {path} to be {TARGET_UPM} UPM, got {upm}. "
+            "Check that the installed ofl-font-baker supports output.upm."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -585,10 +644,11 @@ def _scale_gpos_x(st, scale: float) -> None:
 # Bbox / head-table cleanup
 # ---------------------------------------------------------------------------
 
-# Threshold for "extreme" glyphs whose bbox dominates head.yMax/yMin.
-# em=1000 base; the legitimate Latin/CJK content of Noto stays well within
-# these bounds, so anything past them is the vertical-only iteration-mark
-# glyphs we want to neutralise.
+# Threshold for "extreme" glyphs whose bbox dominates head.yMax/yMin. Values
+# are kept in the project design grid (1000 UPM) and scaled to the font's
+# active UPM before comparison. The legitimate Latin/CJK content of Noto stays
+# well within these bounds, so anything past them is the vertical-only
+# iteration-mark glyphs we want to neutralise.
 _EXTREME_YMAX = 1200
 _EXTREME_YMIN = -400
 _VERTICAL_REPEAT_MARK_CODEPOINTS = tuple(range(0x3031, 0x3036))
@@ -616,6 +676,9 @@ def _strip_extreme_glyphs(font: TTFont) -> None:
     hmtx = font["hmtx"]
     to_remove = set()
     cmap = font.getBestCmap() or {}
+    upm = font["head"].unitsPerEm
+    extreme_ymax = _scale_design_unit(_EXTREME_YMAX, upm)
+    extreme_ymin = _scale_design_unit(_EXTREME_YMIN, upm)
     to_remove.update(
         glyph_name
         for cp, glyph_name in cmap.items()
@@ -627,7 +690,7 @@ def _strip_extreme_glyphs(font: TTFont) -> None:
             continue
         if not hasattr(g, "yMax") or g.yMax is None:
             continue
-        if g.yMax > _EXTREME_YMAX or g.yMin < _EXTREME_YMIN:
+        if g.yMax > extreme_ymax or g.yMin < extreme_ymin:
             to_remove.add(gname)
 
     if not to_remove:
@@ -961,8 +1024,8 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
     Pipeline:
 
     1. **Bake** Noto variable → static TTF at the chosen wght axis location,
-       passed through font-baker with ``metadataMode: inheritBase`` so the
-       Noto identity records survive into the inst.
+       passed through font-baker with ``metadataMode: inheritBase`` and
+       ``output.upm = 2048`` so the Noto identity records survive into the inst.
     2. **Proportionalise** the inst — read palt from the variable cache
        (variable instantiation can corrupt palt), bake those adjustments
        into hmtx except selected runtime-palt yakumono, apply tracking,
@@ -990,7 +1053,9 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
     # `metadataMode: inheritBase` keeps Noto's name/OS2 records intact so
     # designer/OFL/version metadata survives into the inst TTF (no manual
     # save/restore needed). Only `weight` is overridden to stamp the static
-    # instance — family/italic/width inherit from the Noto base.
+    # instance — family/italic/width inherit from the Noto base. `output.upm`
+    # moves every Noto glyph, including unmapped vertical alternates, onto
+    # Inter's 2048 UPM grid before the in-house spacing passes run.
     print(f"    [1/3] Baking Noto Sans JP (wght={noto_wght})...")
     bake_config = {
         "baseFont": {
@@ -1002,6 +1067,7 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
         "output": {
             "weight": weight_num,
             "metadataMode": "inheritBase",
+            "upm": TARGET_UPM,
         },
         "export": {
             "path": {
@@ -1012,18 +1078,31 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
     merge_fonts(bake_config)
 
     # ── Step 2: Convert to proportional + apply tracking ──
-    tracking = family["tracking"]
-    tracking_kana = family["trackingKana"]
+    font = TTFont(inst_path)
+    _assert_target_upm(font, inst_path)
+    font_upm = font["head"].unitsPerEm
+
+    tracking_design = family["tracking"]
+    tracking_kana_design = family["trackingKana"]
+    tracking = _scale_design_unit(tracking_design, font_upm)
+    tracking_kana = (
+        None
+        if tracking_kana_design is None
+        else _scale_design_unit(tracking_kana_design, font_upm)
+    )
     tracking_ignore = family.get("trackingIgnore")
     runtime_palt_chars = family.get("runtimePalt")
     runtime_vpal_chars = family.get("runtimeVpal")
 
     desc = f"tracking +{tracking}"
+    if font_upm != SOURCE_UPM:
+        desc += f" ({tracking_design} at {SOURCE_UPM} UPM)"
     if tracking_kana is not None:
-        desc += f" (kana/punct +{tracking_kana})"
+        kana_desc = f"kana/punct +{tracking_kana}"
+        if font_upm != SOURCE_UPM:
+            kana_desc += f" ({tracking_kana_design} at {SOURCE_UPM} UPM)"
+        desc += f" ({kana_desc})"
     print(f"    [2/3] Proportional (palt) + {desc}...")
-
-    font = TTFont(inst_path)
 
     # Split U+30FB from U+2027 before metrics work. Noto maps both to
     # ``uni2027``, but U+30FB is one of the yakumono glyphs that should
@@ -1036,13 +1115,17 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
     # variable instantiation can leave proportional ValueRecords with zeroed
     # or otherwise stale placement/advance pairs. The cached variable read is
     # canonical across all weights.
-    palt_data = dict(_get_variable_palt())
+    palt_data = _scale_design_adjustments(dict(_get_variable_palt()), font_upm)
     if split_source in palt_data:
         palt_data["uni30FB"] = palt_data[split_source]
-    vpal_data = dict(_get_variable_vpal())
+    vpal_data = _scale_design_adjustments(dict(_get_variable_vpal()), font_upm)
     if split_source in vpal_data:
         vpal_data["uni30FB"] = vpal_data[split_source]
-    for glyph_name, value in SYNTHETIC_VPAL_ADJUSTMENTS.items():
+    synthetic_vpal_adjustments = _scale_design_adjustments(
+        SYNTHETIC_VPAL_ADJUSTMENTS,
+        font_upm,
+    )
+    for glyph_name, value in synthetic_vpal_adjustments.items():
         if glyph_name in font.getGlyphOrder():
             vpal_data[glyph_name] = value
             runtime_vpal_glyphs.add(glyph_name)
@@ -1071,7 +1154,10 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
         runtime_vpal=runtime_vpal_glyphs,
     )
     _apply_tracking(font, tracking, tracking_kana, tracking_ignore)
-    spacing_adjusted = _apply_glyph_spacing(font, family.get("glyphSpacing"))
+    spacing_adjusted = _apply_glyph_spacing(
+        font,
+        _scale_glyph_spacing(family.get("glyphSpacing"), font_upm),
+    )
     if spacing_adjusted:
         print(f"          Per-glyph spacing: {spacing_adjusted} glyph(s) adjusted")
     _strip_extreme_glyphs(font)
@@ -1086,6 +1172,7 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
     ttf_dir = os.path.join(DIST_TTF, family_name)
     final_path = os.path.join(ttf_dir, f"{file_name}.ttf")
     print(f"    [3/3] Merging {family['interPrefix']} + proportional Noto...")
+    baseline_offset = _scale_design_unit(BASELINE_OFFSET, TARGET_UPM)
     merge_config = {
         "subFont": {
             "path": inter_path,
@@ -1097,7 +1184,7 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
         "baseFont": {
             "path": prop_path,
             "scale": SCALE,
-            "baselineOffset": BASELINE_OFFSET,
+            "baselineOffset": baseline_offset,
             "axes": [],
         },
         "output": {
@@ -1106,6 +1193,7 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
             "italic": False,
             "width": 5,
             "metricsSource": "sub",
+            "upm": TARGET_UPM,
             "manufacturer": "Yamato Iizuka",
             "manufacturerURL": "https://yamatoiizuka.com",
         },
@@ -1117,12 +1205,15 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
     }
     with _suppress_fonttools_coverage_warnings():
         merge_fonts(merge_config)
+    final_font = TTFont(final_path)
+    _assert_target_upm(final_font, final_path)
+    final_font.close()
     _normalize_layout_coverage_order(final_path)
     _refresh_runtime_prop_features_after_merge(
         final_path,
         runtime_palt_by_codepoint,
         runtime_vpal_by_codepoint,
-        SYNTHETIC_VPAL_ADJUSTMENTS,
+        synthetic_vpal_adjustments,
     )
     return {
         "fontPath": final_path,

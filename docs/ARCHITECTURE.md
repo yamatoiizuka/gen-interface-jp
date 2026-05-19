@@ -21,6 +21,7 @@ consumes the published webfont package.
         │   [1/3] Bake — font-baker, base-only            │
         │         Noto wght axis → static TTF             │
         │         metadataMode=inheritBase                │
+        │         output.upm=2048                         │
         │             ↓                                   │
         │   [2/3] Proportionalise — proportional.py       │
         │      palt → hmtx + runtime yakumono palt/vpal   │
@@ -31,7 +32,8 @@ consumes the published webfont package.
         │         Inter (sub) + proportional Noto (base)  │
         │         subFont.excludeCodepoints keeps         │
         │         CJK-conventional symbols on Noto        │
-        │         metricsSource=sub, manufacturer stamp   │
+        │         output.upm=2048, metricsSource=sub      │
+        │         manufacturer stamp                      │
         │         normalize GSUB/GPOS coverage order      │
         │             ↓                                   │
         │   dist/ttf/  (one TTF per family × weight)      │
@@ -69,6 +71,7 @@ For each (family, weight) in FAMILIES × WEIGHTS:
                     inheritBase passes designer/OFL/version
                     through; only weight is stamped
   → reload inst, read palt/vpal from cached variable font
+    and scale those 1000-UPM records to the active 2048-UPM grid
   → bake Noto palt at full strength except runtime yakumono,
     whose palt is split into a 34% baked base + 66% live feature
     (glyphs without palt keep metrics)
@@ -78,13 +81,14 @@ For each (family, weight) in FAMILIES × WEIGHTS:
     except repeatable no-gap symbols in family["trackingIgnore"]
   → _apply_glyph_spacing applies family["glyphSpacing"] sidebearing tweaks
   → _strip_extreme_glyphs neutralises vertical iteration marks 〱-〵
-    (yMax > 1200 / yMin < -400)
+    (1000-UPM design thresholds: yMax > 1200 / yMin < -400)
   → font-baker merge: Inter + proportional Noto
                      subFont.excludeCodepoints = SUB_EXCLUDE_CODEPOINTS
                      keeps CJK-conventional symbols on Noto;
                      font-baker also auto-renames glyph-name collisions
                      (e.g. Inter U+0298 vs Noto U+25CE both `uni25CE`)
                      family/weight stamped to "Gen Interface JP …"
+                     output.upm=2048 preserves Inter's native grid
                      metricsSource=sub anchors hhea on Inter
                      manufacturer / manufacturerURL stamped
   → reload/save final TTF once so GSUB/GPOS coverage tables are ordered
@@ -133,20 +137,30 @@ Noto's identity records (designer, OFL, manufacturer, version) intact, so
 the inst TTF carries clean source metadata into Stage 2 without manual
 save/restore.
 
+`output.upm = 2048` is set at this first stage. Noto's source is 1000 UPM,
+but Inter / Inter Display are native 2048 UPM; moving the Noto intermediate
+onto Inter's grid before project-owned spacing work avoids rounding Inter
+down to 1000 UPM in the final merge. font-baker is expected to scale the
+full glyph order here, including unmapped vertical alternates that can still
+carry palt records.
+
 ### Stage 2 — Proportionalise + tune metrics
 
 Four sub-passes, all in-place on the inst:
 
 1. **palt baking / runtime vpal** (`proportional.make_proportional`) — palt values are
    read from the cached variable font (instantiation can corrupt palt's
-   ValueRecords at non-default axis positions). XPlacement/XAdvance pairs
-   are added to LSB / advance, outlines shifted. Most Noto palt entries are
+   ValueRecords at non-default axis positions), then scaled from Noto's
+   1000-UPM source grid to the active 2048-UPM build grid.
+   XPlacement/XAdvance pairs are added to LSB / advance, outlines shifted.
+   Most Noto palt entries are
    baked at full strength, but yakumono listed in `PALT_FEATURE_CHARS`
    is split: 34% of the palt adjustment is baked into `hmtx` so the glyph is
    still tightened when `palt` is disabled, and the remaining 66% is
    reinstalled as a live `palt` GPOS feature. For Noto's common
    `XAdvance=-500` yakumono records, that means palt-off gets `-170` baked
-   into the base advance and palt-on applies the remaining `-330`. Noto
+   into the base advance and palt-on applies the remaining `-330` before
+   UPM scaling. Noto
    `vpal` is read from the same variable source and reinstalled for the
    Unicode-mapped yakumono listed in `VPAL_FEATURE_CHARS` (33 glyphs,
    including vertical presentation forms and fullwidth percent). Fullwidth
@@ -161,7 +175,9 @@ Four sub-passes, all in-place on the inst:
 2. **Tracking** (`_apply_tracking`) — advance grows by `tracking`;
    `tracking // 2` is added to LSB so the outline sits centred in the
    wider slot. Kana / punctuation get a separate `trackingKana` value
-   when set on the family. `trackingIgnore` accepts codepoints / ranges
+   when set on the family. These constants are authored on the 1000-UPM
+   design grid (`+30` / `+40` for the normal family) and scaled to the
+   active UPM before application. `trackingIgnore` accepts codepoints / ranges
    and skips glyphs resolved through cmap. The default ignore list keeps
    the Noto tracking stage from widening Box Drawing (`U+2500-U+257F`),
    Block Elements (`U+2580-U+259F`), two-dot / midline leaders
@@ -173,7 +189,8 @@ Four sub-passes, all in-place on the inst:
 3. **Per-glyph spacing** (`_apply_glyph_spacing`) — manual fallback for
    the rare glyph whose sidebearings still read off after palt + uniform
    tracking. The family's `glyphSpacing` dict maps a codepoint or
-   character to a `(lsb_delta, rsb_delta)` pair: `lsb_delta` increases
+   character to a `(lsb_delta, rsb_delta)` pair, authored at 1000 UPM and
+   scaled before application: `lsb_delta` increases
    hmtx LSB and advance by the same amount, while `rsb_delta` only grows
    advance on the right. Outline coordinates are never touched. Populate
    sparingly — each entry hand-tuned for one glyph against a specific
@@ -206,10 +223,13 @@ the glyph name `uni25CE`; rather than letting Inter's outline overwrite
 mechanisms cover both direct overlaps and the trickier name-collision case
 without any manual cmap surgery in this project.
 
-`output.metricsSource = "sub"` anchors the merged hhea / OS/2 envelope on Inter
-so Latin metrics drive line height. `BASELINE_OFFSET = 25` nudges Noto up so CJK
-ideographs share an optical baseline with Latin caps; `SCALE = 0.925` shrinks
-Noto so a CJK character lines up in width with Inter's cap-height — a
+`output.upm = 2048` preserves Inter's native coordinate grid in the final TTF,
+and `output.metricsSource = "sub"` anchors the merged hhea / OS/2 envelope on
+Inter so Latin metrics drive line height. `BASELINE_OFFSET = 25` is a 1000-UPM
+design value (built as `51` at 2048 UPM) that nudges Noto up so CJK ideographs
+share an optical baseline with Latin caps; `SCALE = 0.925` is still the optical
+CJK design scale, not the UPM conversion. It shrinks Noto so a CJK character
+lines up in width with Inter's cap-height — a
 typographic convention for Latin/CJK pairing where CJK is slightly down-scaled
 to feel proportionate.
 
@@ -239,8 +259,8 @@ with `runtime_palt_base_scale`, the build bakes that fraction of each runtime
 record into the base metrics and installs only the residual delta as live
 `palt` after `palt` / `vpal` / `halt` / `vhal` are stripped. The project uses
 `RUNTIME_PALT_BASE_SCALE = 0.34`, so palt-off yakumono is already partially
-tightened (`-170` for the common `-500` palt advance) while enabling `palt`
-still reaches the full Noto palt target.
+tightened (`-170` for the common `-500` palt advance before UPM scaling) while
+enabling `palt` still reaches the full Noto palt target.
 When `runtime_vpal` is provided, matching Noto `vpal` records are also
 reinstalled as a fresh `vpal` feature without affecting horizontal metrics.
 The build uses `PALT_FEATURE_CHARS` (48 chars) for runtime `palt` and
@@ -282,7 +302,9 @@ of new text frames.
 
 `_strip_extreme_glyphs` neutralises vertical-text iteration marks
 `U+3031-U+3035` explicitly, plus any glyph with `yMax > 1200` or
-`yMin < -400` (em = 1000 baseline). In Noto Sans JP the bbox outliers are
+`yMin < -400` on the 1000-UPM design grid. The thresholds are scaled to the
+active font UPM before comparison (about `yMax > 2458` / `yMin < -819` in the
+2048-UPM build). In Noto Sans JP the bbox outliers are
 the full vertical iteration marks and their `vert` / `vrt2` alternates;
 the upper/lower-half remnants (`〳〴〵`) are removed by codepoint because
 they are vertical-only and can confuse Adobe's Japanese composer in
@@ -305,7 +327,7 @@ falls through to .notdef.
 | | yMin / yMax | span |
 |---|---|---|
 | Before (vanilla Noto) | -1047 / +1807 | 2.85×em |
-| After | ~-319 / +1108 | ~1.43×em (Inter-equivalent) |
+| After (final 2048 UPM) | ~-660 / +2269 | ~1.43×em (Inter-equivalent) |
 
 ### Design choice — UI font, horizontal only
 
@@ -416,7 +438,8 @@ Tests live under `tests/`, split by surface:
   Noto Variable for tests that need real palt / vpal / vert / cmap data, and a
   hand-built minimal TrueType (`FontBuilder`) for whole-font mutation
   tests where 17 000 Noto glyphs would be wasteful.
-- **`tests/test_font_build.py`** — `_glyph_codepoint`, `_is_kana_or_punct`,
+- **`tests/test_font_build.py`** — UPM design-unit scaling
+  (`SOURCE_UPM = 1000`, `TARGET_UPM = 2048`), `_glyph_codepoint`, `_is_kana_or_punct`,
   `_is_cjk_codepoint`, `_is_kana_letter`, `_get_cjk_glyphs`,
   `_get_vert_alternates`, `_apply_x_scale`, `_strip_extreme_glyphs`,
   `_apply_tracking`, `_apply_glyph_spacing`, `_glyphs_for_codepoints`,
@@ -438,7 +461,7 @@ Tests live under `tests/`, split by surface:
 
 | File | Tests | Verifies |
 |---|---|---|
-| `test_font_build.py` | 91 | Glyph-name parsing, kana / CJK classification, GSUB/GPOS walk, x-scale, bbox strip, tracking, runtime feature retargeting |
+| `test_font_build.py` | 96 | UPM scaling policy, glyph-name parsing, kana / CJK classification, GSUB/GPOS walk, x-scale, bbox strip, tracking, runtime feature retargeting |
 | `test_proportional.py` | 29 | palt/vpal extraction, glyph translation, GPOS feature removal, runtime-palt/vpal reinstall + base/residual split + optional squeeze helper |
 | `test_release.py` | 2 | GitHub asset URL contract, npm package layout (files glob, license, README, self-host/CDN CSS entrypoints at root) |
 | `test_webfont_build.py` | 42 | Range merge / dedup, unicode-range formatting incl. 5-digit, JIS row mapping, subset plan placement / non-overlap / coverage, strategy parser edge cases |

@@ -21,6 +21,7 @@ Gen Interface JP はフォントビルドパイプライン (アプリ/UI なし
         │   [1/3] Bake — font-baker, base-only            │
         │         Noto wght → static TTF                  │
         │         metadataMode=inheritBase                │
+        │         output.upm=2048                         │
         │             ↓                                   │
         │   [2/3] Proportionalise — proportional.py       │
         │      palt → hmtx + runtime 役物 palt/vpal       │
@@ -31,7 +32,8 @@ Gen Interface JP はフォントビルドパイプライン (アプリ/UI なし
         │         Inter (sub) + proportional Noto (base)  │
         │         subFont.excludeCodepoints で日本語慣習    │
         │         記号は Noto を維持                        │
-        │         metricsSource=sub, manufacturer 刻印     │
+        │         output.upm=2048, metricsSource=sub      │
+        │         manufacturer 刻印                        │
         │         GSUB/GPOS coverage order 正規化          │
         │             ↓                                   │
         │   dist/ttf/  (ファミリー × ウェイトごとに TTF)    │
@@ -69,6 +71,7 @@ FAMILIES × WEIGHTS の各組合せに対して:
                     inheritBase で designer/OFL/version を継承
                     weight だけを上書き
   → inst を再読込し、キャッシュした variable から palt/vpal 取得
+    1000-UPM の record を 2048-UPM のビルドグリッドへ換算
   → runtime 役物を除き Noto の palt エントリを全量で焼き込み
     runtime 役物は 34% を base に焼き、66% を live feature に残す
     (palt なしグリフはメトリクス維持)
@@ -78,13 +81,14 @@ FAMILIES × WEIGHTS の各組合せに対して:
     ただし family["trackingIgnore"] の連続・隙間なし記号は除外
   → _apply_glyph_spacing で family["glyphSpacing"] の個別調整を適用
   → _strip_extreme_glyphs で縦組み用繰り返し記号 〱-〵 を無効化
-    (yMax > 1200 / yMin < -400)
+    (1000-UPM 設計値: yMax > 1200 / yMin < -400)
   → font-baker merge: Inter + proportional Noto
                      subFont.excludeCodepoints = SUB_EXCLUDE_CODEPOINTS で
                      日本語慣習記号 (① Ⓐ ※ ◯ …) は Noto を維持
                      glyph-name collision (Inter U+0298 と Noto U+25CE が
                      共に `uni25CE`) も font-baker が自動 rename
                      family/weight を「Gen Interface JP …」に刻印
+                     output.upm=2048 で Inter ネイティブグリッドを維持
                      metricsSource=sub で Inter 基準の hhea を採用
                      manufacturer / manufacturerURL を刻印
   → final TTF を一度 reload/save し、GSUB/GPOS coverage を
@@ -134,19 +138,29 @@ Noto の軸は非線形で、整数位置の太さでは Inter より細く見�
 inst TTF は手動 save/restore なしにクリーンな出元メタデータを持って
 Stage 2 に渡る。
 
+この最初の段階で `output.upm = 2048` を指定する。Noto のソースは 1000 UPM
+だが、Inter / Inter Display は 2048 UPM がネイティブなので、プロジェクト側の
+spacing 作業に入る前に Noto intermediate を Inter のグリッドへ移す。これにより
+final merge で Inter を 1000 UPM に丸め落とさずに済む。ここでは font-baker が
+glyph order 全体をスケールする前提で、縦組み代替のような unmapped glyph も
+palt record を持ちうるため対象に含める。
+
 ### Stage 2 — プロポーショナル化 + メトリクス調整
 
 inst に対して 4 つのサブパスを in-place で実行:
 
 1. **palt のベイク / runtime vpal** (`proportional.make_proportional`) — palt 値は
    キャッシュ済みの variable から読む (instantiation で非デフォルト軸位置の
-   palt ValueRecord が壊れることがあるため)。XPlacement / XAdvance を
-   LSB / advance に加算しアウトラインをシフト。Noto の palt エントリは
+   palt ValueRecord が壊れることがあるため)。その値は Noto の 1000-UPM
+   ソースグリッドから、実際の 2048-UPM ビルドグリッドへ換算する。
+   XPlacement / XAdvance を LSB / advance に加算しアウトラインをシフト。
+   Noto の palt エントリは
    原則として全量で焼き込むが、`PALT_FEATURE_CHARS` の役物は分割する。
    palt 調整量の 34% を `hmtx` に焼き込んで `palt` 無効時にもある程度
    詰まる base metrics にし、残り 66% を live `palt` GPOS feature として
    再生成する。Noto の典型的な `XAdvance=-500` の役物では、palt-off で
-   `-170` が base advance に焼かれ、palt-on で残り `-330` が適用される。
+   `-170` が base advance に焼かれ、palt-on で残り `-330` が適用される
+   (いずれも UPM 換算前の設計値)。
    Noto の `vpal` も同じ variable から読み、
    `VPAL_FEATURE_CHARS` に列挙した Unicode-mapped
    役物 33 glyph (縦組み presentation form と全角パーセントを含む) を
@@ -162,7 +176,8 @@ inst に対して 4 つのサブパスを in-place で実行:
 2. **トラッキング** (`_apply_tracking`) — advance を `tracking` 分広げ、
    `tracking // 2` を LSB に加算してアウトラインを広がった枠の中央に
    配置。kana / 句読点はファミリー設定の `trackingKana` で別値。
-   `trackingIgnore` はコードポイント / 範囲を受け取り、cmap で解決した
+   これらの値は 1000-UPM 設計値として持ち、normal family では `+30` / `+40`
+   を active UPM に換算して適用する。`trackingIgnore` はコードポイント / 範囲を受け取り、cmap で解決した
    グリフを完全にスキップする。デフォルトでは Noto の tracking stage で
    Box Drawing (`U+2500-U+257F`)、Block Elements (`U+2580-U+259F`)、
    2 点 / 中点 leader (`U+2025`, `U+22EF`)、半角中黒 (`U+FF65`)、`U+3030`、
@@ -173,7 +188,8 @@ inst に対して 4 つのサブパスを in-place で実行:
 3. **個別グリフのスペーシング** (`_apply_glyph_spacing`) — palt + 一律
    トラッキングだけでは追い込めない稀なグリフのための手動レイヤー。
    ファミリー設定の `glyphSpacing` がコードポイント (または 1 文字) を
-   `(lsb_delta, rsb_delta)` ペアにマップする: `lsb_delta` は hmtx LSB と
+   1000-UPM 設計値の `(lsb_delta, rsb_delta)` ペアにマップし、適用前に
+   active UPM へ換算する: `lsb_delta` は hmtx LSB と
    advance を同量増やし、`rsb_delta` は advance を右側だけ広げる。
    アウトライン座標は触らない。各エントリは特定グリフを特定の隣接リズムに
    対して個別チューニングする想定なので、慎重に追加すること。現在の調整値は
@@ -202,11 +218,14 @@ font-baker は sub のほうを `uni25CE.sub` にリネームし、base のグ�
 する。この 2 段で、直接重複と命名衝突の両方を、こちら側で cmap を手術せず
 にカバーできる。
 
+`output.upm = 2048` で final TTF でも Inter のネイティブ座標グリッドを維持し、
 `output.metricsSource = "sub"` で merged の hhea / OS/2 包絡線を Inter 側に
-揃え、欧文のメトリクスが行高を駆動する。`BASELINE_OFFSET = 25` で Noto を
-上に持ち上げ、CJK 漢字が Latin の caps と光学的に同じベースラインに乗るように
-調整。`SCALE = 0.925` で Noto を縮め、CJK 1 文字の幅が Inter の cap-height と
-揃う — 欧文/CJK 混植で CJK を少し小さくして釣り合いを取る、という慣例的な配分。
+揃え、欧文のメトリクスが行高を駆動する。`BASELINE_OFFSET = 25` は 1000-UPM
+設計値で、2048-UPM build では `51` として Noto を上に持ち上げる。これにより
+CJK 漢字が Latin の caps と光学的に同じベースラインに乗る。`SCALE = 0.925` は
+UPM 変換ではなく光学的な CJK デザインスケールとして残し、CJK 1 文字の幅が
+Inter の cap-height と揃うように Noto を縮める — 欧文/CJK 混植で CJK を少し
+小さくして釣り合いを取る、という慣例的な配分。
 
 `output.manufacturer = "Yamato Iizuka"`、`output.manufacturerURL =
 "https://yamatoiizuka.com"` でリリース TTF の nameID 8 / 11 を刻印。
@@ -232,8 +251,8 @@ em-square を占有し、`palt` GPOS が runtime に kana / Latin を光学的�
 base metrics に焼き込み、`palt` / `vpal` / `halt` / `vhal` を削除した後に
 残差だけを新しい `palt` feature として追加する。本プロジェクトでは
 `RUNTIME_PALT_BASE_SCALE = 0.34` を使うため、palt-off の役物はすでに部分的に
-詰まり (典型的な `-500` palt advance なら `-170`)、`palt` を有効にすると
-Noto の full palt 目標まで到達する。
+詰まり (典型的な `-500` palt advance なら UPM 換算前で `-170`)、`palt` を
+有効にすると Noto の full palt 目標まで到達する。
 `runtime_vpal` が指定された場合は、一致する Noto `vpal` record も水平
 メトリクスに触らず新しい `vpal` feature として戻す。ビルドでは runtime
 `palt` に `PALT_FEATURE_CHARS` (48 文字)、runtime `vpal` に
@@ -274,7 +293,9 @@ Inter の Latin 専用挙動 (各行のグリフに応じた行高動的調整) 
 
 `_strip_extreme_glyphs` は縦組み用イテレーションマーク `U+3031-U+3035`
 を明示的に無効化し、さらに `yMax > 1200` または `yMin < -400`
-(em = 1000 基準) のグリフも無効化する。Noto Sans JP で bbox の外れ値に
+という 1000-UPM 設計グリッド上の閾値に該当するグリフも無効化する。実際の
+比較前に active UPM へ換算するため、2048-UPM build ではおよそ
+`yMax > 2458` / `yMin < -819` になる。Noto Sans JP で bbox の外れ値に
 なるのは全形の縦組み用イテレーションマークと `vert` / `vrt2` 代替。
 上半分/下半分の名残 (`〳〴〵`) は bbox としては外れ値ではないが、横組み
 テキスト内で Adobe の Japanese コンポーザーを混乱させるため、コードポイント
@@ -297,7 +318,7 @@ Inter の Latin 専用挙動 (各行のグリフに応じた行高動的調整) 
 | | yMin / yMax | span |
 |---|---|---|
 | Before (Noto そのまま) | -1047 / +1807 | 2.85×em |
-| After | 約 -319 / +1108 | ~1.43×em (Inter 相当) |
+| After (final 2048 UPM) | 約 -660 / +2269 | ~1.43×em (Inter 相当) |
 
 ### 設計方針 — UI フォントとして横組み専用
 
@@ -405,7 +426,8 @@ PYTHONPATH=src python3 -m pytest        # 全テスト (~0.6 秒)
   が必要なテスト用に Noto Variable のサブセットをセッション単位でキャッシュ;
   全グリフ走査が必要な mutation テスト用には `FontBuilder` で組み立てた
   最小 TrueType (Noto 17000 グリフを毎回触るのは無駄)。
-- **`tests/test_font_build.py`** — `_glyph_codepoint`, `_is_kana_or_punct`,
+- **`tests/test_font_build.py`** — UPM 設計値換算
+  (`SOURCE_UPM = 1000`, `TARGET_UPM = 2048`)、`_glyph_codepoint`, `_is_kana_or_punct`,
   `_is_cjk_codepoint`, `_is_kana_letter`, `_get_cjk_glyphs`,
   `_get_vert_alternates`, `_apply_x_scale`, `_strip_extreme_glyphs`,
   `_apply_tracking`, `_apply_glyph_spacing`, `_glyphs_for_codepoints`,
@@ -428,7 +450,7 @@ PYTHONPATH=src python3 -m pytest        # 全テスト (~0.6 秒)
 
 | ファイル | テスト数 | 検証内容 |
 |---|---|---|
-| `test_font_build.py` | 91 | グリフ名パース、kana / CJK 分類、GSUB/GPOS 走査、x-scale、bbox 除去、tracking、runtime feature の retarget |
+| `test_font_build.py` | 96 | UPM 換算ポリシー、グリフ名パース、kana / CJK 分類、GSUB/GPOS 走査、x-scale、bbox 除去、tracking、runtime feature の retarget |
 | `test_proportional.py` | 29 | palt/vpal 抽出、グリフ平行移動、GPOS feature 削除、runtime-palt/vpal 再生成 + base/residual 分割 + optional squeeze helper |
 | `test_release.py` | 2 | GitHub アセット URL 契約、npm パッケージレイアウト (files glob、license、README、self-host/CDN CSS root 配置) |
 | `test_webfont_build.py` | 42 | 範囲マージ / 重複除去、5 桁 hex 含む unicode-range、JIS 区マッピング、サブセット計画の配置 / 非重複 / 完全カバレッジ、ストラテジーパーサーのエッジケース |
