@@ -29,6 +29,10 @@ from font.build import (
     _retarget_feature_adjustments,
     _retarget_named_adjustments,
     _runtime_palt_residual_adjustment,
+    _scale_design_adjustment,
+    _scale_design_adjustments,
+    _scale_design_unit,
+    _scale_glyph_spacing,
     _split_cmap_codepoint_glyph,
     _strip_extreme_glyphs,
     DISPLAY_PALT_SPACE_ADJUSTMENTS,
@@ -36,12 +40,44 @@ from font.build import (
     PALT_FEATURE_CHARS,
     PALT_SPACE_ADJUSTMENTS,
     RUNTIME_PALT_BASE_SCALE,
+    SOURCE_UPM,
     SUB_EXCLUDE_CODEPOINTS,
     SYNTHETIC_VPAL_ADJUSTMENTS,
+    TARGET_UPM,
     TRACKING_IGNORE_CODEPOINTS,
     VPAL_FEATURE_CHARS,
 )
 from merge_fonts import parse_codepoint_list
+
+
+# ---------------------------------------------------------------------------
+# UPM policy
+# ---------------------------------------------------------------------------
+
+class TestUpmPolicy:
+    """Project-owned design units are authored at 1000 UPM and scaled at build time."""
+
+    def test_target_upm_matches_inter_native_grid(self):
+        assert SOURCE_UPM == 1000
+        assert TARGET_UPM == 2048
+
+    def test_scales_single_design_unit_value(self):
+        assert _scale_design_unit(25) == 51
+        assert _scale_design_unit(30) == 61
+        assert _scale_design_unit(40) == 82
+        assert _scale_design_unit(-400) == -819
+
+    def test_scales_position_adjustment_tuple(self):
+        assert _scale_design_adjustment((-250, -500)) == (-512, -1024)
+
+    def test_scales_glyph_keyed_adjustments(self):
+        assert _scale_design_adjustments({"uni3001": (-250, -500)}) == {
+            "uni3001": (-512, -1024),
+        }
+
+    def test_scales_codepoint_keyed_spacing(self):
+        assert _scale_glyph_spacing({"ょ": (30, 35)}) == {"ょ": (61, 72)}
+        assert _scale_glyph_spacing(None) is None
 
 
 # ---------------------------------------------------------------------------
@@ -374,7 +410,8 @@ class TestStripExtremeGlyphs:
         assert after.numberOfContours == before_contours
 
     def test_threshold_constants_match_implementation(self):
-        # If the constants drift, several call sites assume yMax=1200/yMin=-400.
+        # Constants are authored on the 1000 UPM design grid; the implementation
+        # scales them to the active font UPM before comparison.
         assert _EXTREME_YMAX == 1200
         assert _EXTREME_YMIN == -400
 

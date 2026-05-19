@@ -6,7 +6,7 @@ license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.9"
 dependencies = [
-    "ofl-font-baker>=0.4.4",
+    "ofl-font-baker>=0.4.5",
     "freetype-py>=2.4.0",
 ]
 
