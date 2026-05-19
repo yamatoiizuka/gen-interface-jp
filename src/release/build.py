@@ -24,13 +24,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from font.build import DIST_TTF, FAMILIES, ROOT, WEIGHTS
+from project_metadata import project_version as read_project_version
 
 ROOT_PATH = Path(ROOT)
 DIST_TTF_PATH = Path(DIST_TTF)
@@ -49,11 +49,7 @@ class ReleaseFile:
 
 
 def project_version() -> str:
-    pyproject = ROOT_PATH / "pyproject.toml"
-    match = re.search(r'^version\s*=\s*"([^"]+)"', pyproject.read_text(encoding="utf-8"), re.M)
-    if not match:
-        raise ValueError(f"Could not read project version from {pyproject}")
-    return match.group(1)
+    return read_project_version(ROOT_PATH)
 
 
 def normalized_version(version: str | None) -> str:

@@ -6,6 +6,8 @@ inspection, horizontal scaling, bbox stripping, and tracking.
 """
 
 import copy
+import re
+from pathlib import Path
 
 import pytest
 
@@ -17,6 +19,7 @@ from font.build import (
     _EXTREME_YMIN,
     _VERTICAL_REPEAT_MARK_CODEPOINTS,
     _feature_adjustments_for_codepoints,
+    _final_output_metadata,
     _get_cjk_glyphs,
     _get_variable_palt,
     _get_variable_vpal,
@@ -26,6 +29,7 @@ from font.build import (
     _is_cjk_codepoint,
     _is_kana_letter,
     _is_kana_or_punct,
+    _project_version,
     _retarget_feature_adjustments,
     _retarget_named_adjustments,
     _runtime_palt_residual_adjustment,
@@ -78,6 +82,33 @@ class TestUpmPolicy:
     def test_scales_codepoint_keyed_spacing(self):
         assert _scale_glyph_spacing({"ょ": (30, 35)}) == {"ょ": (61, 72)}
         assert _scale_glyph_spacing(None) is None
+
+
+# ---------------------------------------------------------------------------
+# Project version metadata
+# ---------------------------------------------------------------------------
+
+class TestProjectVersionMetadata:
+    """Final TTF metadata is stamped from the canonical project version."""
+
+    def test_project_version_matches_pyproject(self):
+        pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+        match = re.search(
+            r'^version\s*=\s*"([^"]+)"',
+            pyproject.read_text(encoding="utf-8"),
+            re.M,
+        )
+        assert match is not None
+        assert _project_version() == match.group(1)
+
+    def test_final_output_metadata_forwards_version_to_font_baker(self):
+        output = _final_output_metadata("Gen Interface JP", 400, "1.2.3")
+
+        assert output["familyName"] == "Gen Interface JP"
+        assert output["weight"] == 400
+        assert output["metricsSource"] == "sub"
+        assert output["upm"] == TARGET_UPM
+        assert output["version"] == "1.2.3"
 
 
 # ---------------------------------------------------------------------------

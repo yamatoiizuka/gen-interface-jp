@@ -33,7 +33,7 @@ consumes the published webfont package.
         │         subFont.excludeCodepoints keeps         │
         │         CJK-conventional symbols on Noto        │
         │         output.upm=2048, metricsSource=sub      │
-        │         manufacturer stamp                      │
+        │         project version + manufacturer stamp    │
         │         normalize GSUB/GPOS coverage order      │
         │             ↓                                   │
         │   dist/ttf/  (one TTF per family × weight)      │
@@ -90,6 +90,7 @@ For each (family, weight) in FAMILIES × WEIGHTS:
                      family/weight stamped to "Gen Interface JP …"
                      output.upm=2048 preserves Inter's native grid
                      metricsSource=sub anchors hhea on Inter
+                     project version stamped into name metadata
                      manufacturer / manufacturerURL stamped
   → reload/save final TTF once so GSUB/GPOS coverage tables are ordered
     by the final merged glyph IDs
@@ -233,7 +234,13 @@ lines up in width with Inter's cap-height — a
 typographic convention for Latin/CJK pairing where CJK is slightly down-scaled
 to feel proportionate.
 
-`output.manufacturer = "Yamato Iizuka"`, `output.manufacturerURL =
+`output.version` is read from `pyproject.toml` via the shared
+`project_metadata.project_version()` helper, so final TTF nameID 5 and
+nameID 3 carry the same project/release version as the release zip / npm
+package / site metadata. OpenType version comparison only uses the leading
+`major.minor` numeric prefix, so a project version like `1.2.3` appears in
+name strings while `head.fontRevision` resolves to the numeric `1.2`
+prefix. `output.manufacturer = "Yamato Iizuka"`, `output.manufacturerURL =
 "https://yamatoiizuka.com"` stamp nameID 8 / 11 on every released TTF.
 After the merge, the TTF is reloaded and saved once with fontTools so
 GSUB/GPOS coverage tables are sorted against the final merged glyph order.
@@ -414,8 +421,10 @@ Three downstream consumers, three outputs:
   demo site.
 
 Version is read from `pyproject.toml` (or `GITHUB_REF_NAME` in CI). The
-`manifest.json` next to the github / npm / webfonts dirs records release
-URLs for downstream tooling.
+font build also reads `pyproject.toml` through the same shared metadata helper
+when stamping final TTF version records, so font bodies and release artifacts
+do not diverge. The `manifest.json` next to the github / npm / webfonts dirs
+records release URLs for downstream tooling.
 
 ## Site (`site/`)
 
@@ -438,7 +447,8 @@ Tests live under `tests/`, split by surface:
   Noto Variable for tests that need real palt / vpal / vert / cmap data, and a
   hand-built minimal TrueType (`FontBuilder`) for whole-font mutation
   tests where 17 000 Noto glyphs would be wasteful.
-- **`tests/test_font_build.py`** — UPM design-unit scaling
+- **`tests/test_font_build.py`** — UPM design-unit scaling, project-version
+  metadata forwarding
   (`SOURCE_UPM = 1000`, `TARGET_UPM = 2048`), `_glyph_codepoint`, `_is_kana_or_punct`,
   `_is_cjk_codepoint`, `_is_kana_letter`, `_get_cjk_glyphs`,
   `_get_vert_alternates`, `_apply_x_scale`, `_strip_extreme_glyphs`,
@@ -461,7 +471,7 @@ Tests live under `tests/`, split by surface:
 
 | File | Tests | Verifies |
 |---|---|---|
-| `test_font_build.py` | 96 | UPM scaling policy, glyph-name parsing, kana / CJK classification, GSUB/GPOS walk, x-scale, bbox strip, tracking, runtime feature retargeting |
+| `test_font_build.py` | 98 | UPM scaling policy, project-version metadata forwarding, glyph-name parsing, kana / CJK classification, GSUB/GPOS walk, x-scale, bbox strip, tracking, runtime feature retargeting |
 | `test_proportional.py` | 29 | palt/vpal extraction, glyph translation, GPOS feature removal, runtime-palt/vpal reinstall + base/residual split + optional squeeze helper |
 | `test_release.py` | 2 | GitHub asset URL contract, npm package layout (files glob, license, README, self-host/CDN CSS entrypoints at root) |
 | `test_webfont_build.py` | 42 | Range merge / dedup, unicode-range formatting incl. 5-digit, JIS row mapping, subset plan placement / non-overlap / coverage, strategy parser edge cases |
@@ -491,7 +501,7 @@ flow.
 
 ### Python
 
-- `ofl-font-baker` (>= 0.4.1) — Composite font merge engine. Inherits
+- `ofl-font-baker` (>= 0.4.5) — Composite font merge engine. Inherits
   base/sub identity records via `metadataMode`. Drives Stage 1 (bake)
   and Stage 3 (merge) of the build pipeline. 0.4.0 added
   `subFont.excludeCodepoints` and glyph-name collision rename, used by
@@ -499,7 +509,9 @@ flow.
   preserves vertical metrics (`vmtx` / `VORG`) and `vert` / `vrt2`
   GSUB mappings when glyphs are renamed or duplicated during the merge,
   so vertical typesetting of overridden glyphs continues to land at the
-  base font's intended position.
+  base font's intended position. 0.4.5 adds `output.upm`, used by both
+  the Noto bake and final merge stages to keep the pipeline on the 2048 UPM
+  Inter grid.
 - `fonttools` (>= 4.47.0) — Font parsing, instancer, subsetter, GPOS / GSUB
   table editing.
 - `freetype-py` — Used by tooling around metrics inspection.

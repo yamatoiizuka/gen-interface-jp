@@ -33,7 +33,7 @@ Gen Interface JP はフォントビルドパイプライン (アプリ/UI なし
         │         subFont.excludeCodepoints で日本語慣習    │
         │         記号は Noto を維持                        │
         │         output.upm=2048, metricsSource=sub      │
-        │         manufacturer 刻印                        │
+        │         project version + manufacturer 刻印      │
         │         GSUB/GPOS coverage order 正規化          │
         │             ↓                                   │
         │   dist/ttf/  (ファミリー × ウェイトごとに TTF)    │
@@ -90,6 +90,7 @@ FAMILIES × WEIGHTS の各組合せに対して:
                      family/weight を「Gen Interface JP …」に刻印
                      output.upm=2048 で Inter ネイティブグリッドを維持
                      metricsSource=sub で Inter 基準の hhea を採用
+                     project version を name metadata に刻印
                      manufacturer / manufacturerURL を刻印
   → final TTF を一度 reload/save し、GSUB/GPOS coverage を
     merge 後の glyph ID 順に正規化
@@ -227,6 +228,12 @@ UPM 変換ではなく光学的な CJK デザインスケールとして残し�
 Inter の cap-height と揃うように Noto を縮める — 欧文/CJK 混植で CJK を少し
 小さくして釣り合いを取る、という慣例的な配分。
 
+`output.version` は共有 helper `project_metadata.project_version()` 経由で
+`pyproject.toml` から読み、final TTF の nameID 5 と nameID 3 に
+release zip / npm package / site metadata と同じ project/release version を
+刻印する。OpenType の version 比較では先頭の `major.minor` numeric prefix
+だけが使われるため、`1.2.3` のような project version は name string には
+残り、`head.fontRevision` は numeric prefix の `1.2` 相当になる。
 `output.manufacturer = "Yamato Iizuka"`、`output.manufacturerURL =
 "https://yamatoiizuka.com"` でリリース TTF の nameID 8 / 11 を刻印。
 merge 後は final TTF を一度 fontTools で reload/save し、GSUB/GPOS coverage を
@@ -402,7 +409,9 @@ dist/release/npm/
   webfont CSS / WOFF2 レイアウトの静的ミラーを、デモサイトの隣で配信。
 
 バージョンは `pyproject.toml` (CI では `GITHUB_REF_NAME`) から読む。
-github / npm / webfonts ディレクトリの隣にある `manifest.json` には
+font build も同じ共有 metadata helper で `pyproject.toml` を読み、final TTF の
+version record を刻印するため、フォント本体とリリース成果物の version source
+は分岐しない。github / npm / webfonts ディレクトリの隣にある `manifest.json` には
 リリース URL が記録され、下流ツールが参照できる。
 
 ## サイト (`site/`)
@@ -426,7 +435,8 @@ PYTHONPATH=src python3 -m pytest        # 全テスト (~0.6 秒)
   が必要なテスト用に Noto Variable のサブセットをセッション単位でキャッシュ;
   全グリフ走査が必要な mutation テスト用には `FontBuilder` で組み立てた
   最小 TrueType (Noto 17000 グリフを毎回触るのは無駄)。
-- **`tests/test_font_build.py`** — UPM 設計値換算
+- **`tests/test_font_build.py`** — UPM 設計値換算、project-version metadata
+  forwarding
   (`SOURCE_UPM = 1000`, `TARGET_UPM = 2048`)、`_glyph_codepoint`, `_is_kana_or_punct`,
   `_is_cjk_codepoint`, `_is_kana_letter`, `_get_cjk_glyphs`,
   `_get_vert_alternates`, `_apply_x_scale`, `_strip_extreme_glyphs`,
@@ -450,7 +460,7 @@ PYTHONPATH=src python3 -m pytest        # 全テスト (~0.6 秒)
 
 | ファイル | テスト数 | 検証内容 |
 |---|---|---|
-| `test_font_build.py` | 96 | UPM 換算ポリシー、グリフ名パース、kana / CJK 分類、GSUB/GPOS 走査、x-scale、bbox 除去、tracking、runtime feature の retarget |
+| `test_font_build.py` | 98 | UPM 換算ポリシー、project-version metadata forwarding、グリフ名パース、kana / CJK 分類、GSUB/GPOS 走査、x-scale、bbox 除去、tracking、runtime feature の retarget |
 | `test_proportional.py` | 29 | palt/vpal 抽出、グリフ平行移動、GPOS feature 削除、runtime-palt/vpal 再生成 + base/residual 分割 + optional squeeze helper |
 | `test_release.py` | 2 | GitHub アセット URL 契約、npm パッケージレイアウト (files glob、license、README、self-host/CDN CSS root 配置) |
 | `test_webfont_build.py` | 42 | 範囲マージ / 重複除去、5 桁 hex 含む unicode-range、JIS 区マッピング、サブセット計画の配置 / 非重複 / 完全カバレッジ、ストラテジーパーサーのエッジケース |
@@ -480,14 +490,15 @@ GitHub Pages にデプロイ。リリースパッケージングはローカル�
 
 ### Python
 
-- `ofl-font-baker` (>= 0.4.1) — コンポジットフォントマージエンジン。
+- `ofl-font-baker` (>= 0.4.5) — コンポジットフォントマージエンジン。
   `metadataMode` で base / sub の identity を継承する。Stage 1 (bake) と
   Stage 3 (merge) を駆動。0.4.0 で `subFont.excludeCodepoints` と
   glyph-name collision rename が追加され、merge 段で日本語慣習記号を
   Noto に残すために利用している。0.4.1 で rename / duplicate された
   グリフに対して縦書き metrics (`vmtx` / `VORG`) と `vert` / `vrt2` GSUB
   マッピングを base から継承するように修正され、上書き対象の縦書き
-  位置が崩れない。
+  位置が崩れない。0.4.5 で `output.upm` が追加され、Noto bake と final merge
+  の両段で 2048 UPM の Inter グリッドを維持するために使っている。
 - `fonttools` (>= 4.47.0) — フォントパース、instancer、subsetter、
   GPOS / GSUB の編集。
 - `freetype-py` — メトリクス検証ツーリングで使用。
