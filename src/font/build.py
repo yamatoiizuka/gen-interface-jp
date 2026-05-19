@@ -31,6 +31,7 @@ import sys
 from fontTools.ttLib import TTFont
 from fontTools.ttLib.reorderGlyphs import reorderGlyphs
 from merge_fonts import merge_fonts, parse_codepoint_list
+from project_metadata import project_version as read_project_version
 from .proportional import (
     _install_palt_feature,
     _install_vpal_feature,
@@ -278,6 +279,31 @@ NOTO_VARIABLE = os.path.join(VENDOR_FONTS, "Noto_Sans_JP", "NotoSansJP-VariableF
 DIST = os.path.join(ROOT, "dist")
 DIST_TTF = os.path.join(DIST, "ttf")
 INTERMEDIATE = os.path.join(DIST, "intermediate")
+
+
+def _project_version() -> str:
+    """Read the project version used for final generated font metadata."""
+    return read_project_version(ROOT)
+
+
+def _final_output_metadata(
+    family_name: str,
+    weight_num: int,
+    version: str,
+) -> dict[str, object]:
+    """Return font-baker output metadata for the final Gen Interface JP TTF."""
+    return {
+        "familyName": family_name,
+        "weight": weight_num,
+        "italic": False,
+        "width": 5,
+        "metricsSource": "sub",
+        "upm": TARGET_UPM,
+        "version": version,
+        "manufacturer": "Yamato Iizuka",
+        "manufacturerURL": "https://yamatoiizuka.com",
+    }
+
 
 # Codepoints whose glyphs should stay sourced from the base Noto font even
 # when Inter/InterDisplay also encodes them. Forwarded as
@@ -1038,7 +1064,8 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
        sharing the ``uni25CE`` glyph name with Noto's ◎. Output identity
        is rewritten to "Gen Interface JP", Inter's vertical metrics drive
        the merged hhea (``metricsSource: "sub"``), and our manufacturer /
-       URL get stamped into nameID 8 / 11.
+       URL plus the project version get stamped into the final name/head
+       metadata.
     """
     inter_path = os.path.join(INTER_DIR, f"{family['interPrefix']}-{weight_name}.ttf")
     if not os.path.isfile(inter_path):
@@ -1187,16 +1214,11 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
             "baselineOffset": baseline_offset,
             "axes": [],
         },
-        "output": {
-            "familyName": family_name,
-            "weight": weight_num,
-            "italic": False,
-            "width": 5,
-            "metricsSource": "sub",
-            "upm": TARGET_UPM,
-            "manufacturer": "Yamato Iizuka",
-            "manufacturerURL": "https://yamatoiizuka.com",
-        },
+        "output": _final_output_metadata(
+            family_name,
+            weight_num,
+            _project_version(),
+        ),
         "export": {
             "path": {
                 "font": final_path,
