@@ -34,7 +34,7 @@ from fontTools.varLib import instancer
 from merge_fonts import merge_fonts, parse_codepoint_list
 from project_metadata import project_version as read_project_version
 from .proportional import (
-    _install_palt_feature,
+    _install_ss09_punctuation_feature,
     _install_vpal_feature,
     _remove_prop_features,
     _scale_position_adjustment,
@@ -145,9 +145,9 @@ TRACKING_IGNORE_CODEPOINTS = (
     "U+FFE3",          # ￣ FULLWIDTH MACRON
 )
 
-# These yakumono punctuation/symbol glyphs keep a live palt feature instead
-# of receiving hand-tuned hmtx spacing. They still receive normal tracking;
-# palt is applied later by the shaper when the feature is enabled.
+# These yakumono punctuation/symbol glyphs keep a reduced baked base metric
+# and expose the former palt residual through the ss09 "約物半角" stylistic set
+# instead of receiving hand-tuned hmtx spacing. They still receive tracking.
 PALT_FEATURE_CHARS = (
     "、", "。", "，", "．",
     "〈", "〉", "《", "》",
@@ -162,9 +162,9 @@ PALT_FEATURE_CHARS = (
     "＇", "＊", "＾", "｀", "￥",
 )
 
-# Runtime palt yakumono still need a reasonably tight default when callers do
-# not enable palt. Bake this fraction into hmtx, then expose only the remaining
-# palt delta as the live feature.
+# Optional ss09 yakumono still need a reasonably tight default when callers do
+# not enable the feature. Bake this fraction into hmtx, then expose only the
+# remaining palt delta through ss09 alternates.
 RUNTIME_PALT_BASE_SCALE = 0.34
 
 # Unicode-mapped Noto vpal yakumono records kept as a live vertical
@@ -191,10 +191,10 @@ SYNTHETIC_VPAL_ADJUSTMENTS = {
     "uniFF1B": (250, -500),     # U+FF1B ； has no vert substitution
 }
 
-# Glyphs listed here get full Noto palt baked like every other non-runtime
+# Glyphs listed here get full Noto palt baked like every other non-optional
 # palt glyph, then receive explicit hmtx spacing after tracking. Keep this
 # list limited to small kana that need breathing room after palt; yakumono
-# belongs in PALT_FEATURE_CHARS so it can tighten via the live palt feature.
+# belongs in PALT_FEATURE_CHARS so optional tightening stays in ss09.
 PALT_SPACE_ADJUSTMENTS = {
     "ぁ": (15, 15),
     "ぃ": (15, 15),
@@ -934,8 +934,9 @@ def _feature_adjustments_for_codepoints(
     """Capture feature records by codepoint before merge-time glyph renames.
 
     font-baker can rename base glyphs when Inter and Noto both contain the
-    same glyph name. Runtime palt/vpal targets must therefore survive by
-    Unicode scalar, then be retargeted to the final cmap glyph after merge.
+    same glyph name. Optional horizontal and runtime vpal targets must
+    therefore survive by Unicode scalar, then be retargeted to the final cmap
+    glyph after merge.
     """
     if not source_adjustments:
         return {}
@@ -953,7 +954,7 @@ def _feature_adjustments_for_codepoints(
 def _runtime_palt_residual_adjustment(
     adjustment: tuple[int, int],
 ) -> tuple[int, int]:
-    """Return the live palt delta after the default base fraction is baked."""
+    """Return the residual palt delta after the default base fraction is baked."""
     base_placement, base_advance = _scale_position_adjustment(
         adjustment,
         RUNTIME_PALT_BASE_SCALE,
@@ -965,7 +966,7 @@ def _runtime_palt_residual_adjustment(
 def _runtime_palt_residuals_by_codepoint(
     adjustments: dict[int, tuple[int, int]],
 ) -> dict[int, tuple[int, int]]:
-    """Convert full palt records to residual records for final reinstall."""
+    """Convert full palt records to residual records for final ss09 install."""
     return {
         cp: _runtime_palt_residual_adjustment(adjustment)
         for cp, adjustment in adjustments.items()
@@ -1021,22 +1022,22 @@ def _retarget_named_adjustments(
 
 def _refresh_runtime_prop_features_after_merge(
     final_path: str,
-    runtime_palt_by_codepoint: dict[int, tuple[int, int]],
+    ss09_punctuation_by_codepoint: dict[int, tuple[int, int]],
     runtime_vpal_by_codepoint: dict[int, tuple[int, int]],
     runtime_vpal_by_glyph: dict[str, tuple[int, int]],
 ) -> None:
-    """Reinstall live palt/vpal after Inter+Noto merge glyph renaming.
+    """Install yakumono-only ss09 and refresh live vpal after merge.
 
-    The pre-merge proportional Noto already has minimal runtime palt/vpal,
-    but font-baker may rename colliding base glyphs in the final font. Rebuild
-    those features once more against the final cmap so characters such as
-    U+FF40 (｀), which shares Noto's ``uni2035`` glyph before merge, keep their
-    live palt on the renamed final glyph.
+    font-baker may rename colliding base glyphs in the final font. Rebuild the
+    codepoint-keyed optional punctuation behavior against the final cmap so
+    characters such as U+FF40 (｀), which shares Noto's ``uni2035`` glyph before
+    merge, keep their ss09 adjustment on the renamed final glyph. Horizontal
+    palt is intentionally not reinstalled here.
     """
     font = TTFont(final_path)
-    palt_adjustments = _retarget_feature_adjustments(
+    ss09_adjustments = _retarget_feature_adjustments(
         font,
-        runtime_palt_by_codepoint,
+        ss09_punctuation_by_codepoint,
     )
     vpal_adjustments = _retarget_feature_adjustments(
         font,
@@ -1045,7 +1046,7 @@ def _refresh_runtime_prop_features_after_merge(
     vpal_adjustments.update(_retarget_named_adjustments(font, runtime_vpal_by_glyph))
 
     _remove_prop_features(font)
-    _install_palt_feature(font, palt_adjustments)
+    _install_ss09_punctuation_feature(font, ss09_adjustments)
     _install_vpal_feature(font, vpal_adjustments)
     font.save(final_path)
 
@@ -1209,7 +1210,7 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
        ``output.upm = 2048`` so the Noto identity records survive into the inst.
     2. **Proportionalise** the inst — read palt from the variable cache
        (variable instantiation can corrupt palt), bake those adjustments
-       into hmtx except selected runtime-palt yakumono, apply tracking,
+       into hmtx except selected ss09 yakumono, apply tracking,
        apply per-glyph sidebearing tweaks from ``family["glyphSpacing"]``,
        strip extreme bbox glyphs, optionally apply x-scale.
     3. **Merge** the proportional Noto with the matching Inter master via
@@ -1273,7 +1274,7 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
         else _scale_design_unit(tracking_kana_design, font_upm)
     )
     tracking_ignore = family.get("trackingIgnore")
-    runtime_palt_chars = family.get("runtimePalt")
+    ss09_punctuation_chars = family.get("runtimePalt")
     runtime_vpal_chars = family.get("runtimeVpal")
 
     desc = f"tracking +{tracking}"
@@ -1288,9 +1289,9 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
 
     # Split U+30FB from U+2027 before metrics work. Noto maps both to
     # ``uni2027``, but U+30FB is one of the yakumono glyphs that should
-    # keep a live palt record while U+2027 stays on its own palt data.
+    # keep an ss09 alternate while U+2027 stays on its own palt data.
     split_source = _split_cmap_codepoint_glyph(font, 0x30FB, "uni30FB")
-    runtime_palt_glyphs = _glyphs_for_codepoints(font, runtime_palt_chars)
+    ss09_punctuation_glyphs = _glyphs_for_codepoints(font, ss09_punctuation_chars)
     runtime_vpal_glyphs = _glyphs_for_codepoints(font, runtime_vpal_chars)
 
     # Read palt/vpal from the variable source rather than the freshly-baked inst:
@@ -1311,10 +1312,10 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
         if glyph_name in font.getGlyphOrder():
             vpal_data[glyph_name] = value
             runtime_vpal_glyphs.add(glyph_name)
-    runtime_palt_by_codepoint = _runtime_palt_residuals_by_codepoint(
+    ss09_punctuation_by_codepoint = _runtime_palt_residuals_by_codepoint(
         _feature_adjustments_for_codepoints(
             font,
-            runtime_palt_chars,
+            ss09_punctuation_chars,
             palt_data,
         )
     )
@@ -1324,14 +1325,15 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
         vpal_data,
     )
 
-    # Bake Noto palt entries at full strength except runtime yakumono, which
-    # receive a reduced baked base plus a live residual palt feature. Glyphs
-    # without palt keep their original hmtx.
+    # Bake Noto palt entries at full strength except ss09 yakumono, which
+    # receive a reduced baked base. Their residual is captured above and later
+    # exposed as final ss09 alternates. Glyphs without palt keep original hmtx.
     make_proportional(
         font,
         palt_override=palt_data,
-        runtime_palt=runtime_palt_glyphs,
+        runtime_palt=ss09_punctuation_glyphs,
         runtime_palt_base_scale=RUNTIME_PALT_BASE_SCALE,
+        install_runtime_palt=False,
         vpal_override=vpal_data,
         runtime_vpal=runtime_vpal_glyphs,
     )
@@ -1388,7 +1390,7 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
     _normalize_layout_coverage_order(final_path)
     _refresh_runtime_prop_features_after_merge(
         final_path,
-        _scale_feature_adjustments(runtime_palt_by_codepoint, SCALE),
+        _scale_feature_adjustments(ss09_punctuation_by_codepoint, SCALE),
         _scale_feature_adjustments(runtime_vpal_by_codepoint, SCALE),
         _scale_feature_adjustments(synthetic_vpal_adjustments, SCALE),
     )
