@@ -624,6 +624,7 @@ def _install_single_subst_feature(
         if script.LangSysRecord:
             for lsr in script.LangSysRecord:
                 _append_feature_index(lsr.LangSys, feature_index)
+    _sort_feature_list_and_remap_langsys(table)
 
 
 def _stylistic_set_feature_params(font: TTFont):
@@ -665,6 +666,51 @@ def _ensure_script_list(table) -> None:
     table.ScriptList = otTables.ScriptList()
     table.ScriptList.ScriptRecord = [script_record]
     table.ScriptList.ScriptCount = 1
+
+
+def _sort_feature_list_and_remap_langsys(table) -> None:
+    """Sort FeatureRecords by tag and remap LangSys feature indices."""
+    feature_list = getattr(table, "FeatureList", None)
+    script_list = getattr(table, "ScriptList", None)
+    if feature_list is None or script_list is None:
+        return
+    records = list(getattr(feature_list, "FeatureRecord", None) or [])
+    if not records:
+        return
+
+    sorted_pairs = sorted(
+        enumerate(records),
+        key=lambda item: item[1].FeatureTag,
+    )
+    old_to_new = {
+        old_index: new_index
+        for new_index, (old_index, _record) in enumerate(sorted_pairs)
+    }
+    feature_list.FeatureRecord = [
+        record for _old_index, record in sorted_pairs
+    ]
+    feature_list.FeatureCount = len(feature_list.FeatureRecord)
+
+    for script_record in getattr(script_list, "ScriptRecord", None) or []:
+        script = script_record.Script
+        langsystems = []
+        if script.DefaultLangSys:
+            langsystems.append(script.DefaultLangSys)
+        for langsys_record in script.LangSysRecord or []:
+            langsystems.append(langsys_record.LangSys)
+
+        for langsys in langsystems:
+            langsys.FeatureIndex = [
+                old_to_new[index]
+                for index in (langsys.FeatureIndex or [])
+                if index in old_to_new
+            ]
+            langsys.FeatureCount = len(langsys.FeatureIndex)
+            if getattr(langsys, "ReqFeatureIndex", 0xFFFF) != 0xFFFF:
+                langsys.ReqFeatureIndex = old_to_new.get(
+                    langsys.ReqFeatureIndex,
+                    0xFFFF,
+                )
 
 
 def _extend_pairpos_for_alternates(

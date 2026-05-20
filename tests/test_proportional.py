@@ -107,6 +107,62 @@ def _install_synthetic_pairpos_kern(
     gpos.table.FeatureList.FeatureCount = 1
 
 
+def _install_synthetic_gsub_single_subst_feature(
+    font,
+    feature_tag: str,
+    mapping: dict[str, str],
+) -> None:
+    gsub = newTable("GSUB")
+    font["GSUB"] = gsub
+    gsub.table = otTables.GSUB()
+    gsub.table.Version = 0x00010000
+
+    langsys = otTables.LangSys()
+    langsys.LookupOrder = None
+    langsys.ReqFeatureIndex = 0
+    langsys.FeatureIndex = [0]
+    langsys.FeatureCount = 1
+
+    script = otTables.Script()
+    script.DefaultLangSys = langsys
+    script.LangSysRecord = []
+    script.LangSysCount = 0
+
+    script_record = otTables.ScriptRecord()
+    script_record.ScriptTag = "DFLT"
+    script_record.Script = script
+
+    gsub.table.ScriptList = otTables.ScriptList()
+    gsub.table.ScriptList.ScriptRecord = [script_record]
+    gsub.table.ScriptList.ScriptCount = 1
+
+    subtable = otTables.SingleSubst()
+    subtable.mapping = mapping
+
+    lookup = otTables.Lookup()
+    lookup.LookupType = 1
+    lookup.LookupFlag = 0
+    lookup.SubTable = [subtable]
+    lookup.SubTableCount = 1
+
+    gsub.table.LookupList = otTables.LookupList()
+    gsub.table.LookupList.Lookup = [lookup]
+    gsub.table.LookupList.LookupCount = 1
+
+    feature = otTables.Feature()
+    feature.FeatureParams = None
+    feature.LookupListIndex = [0]
+    feature.LookupCount = 1
+
+    feature_record = otTables.FeatureRecord()
+    feature_record.FeatureTag = feature_tag
+    feature_record.Feature = feature
+
+    gsub.table.FeatureList = otTables.FeatureList()
+    gsub.table.FeatureList.FeatureRecord = [feature_record]
+    gsub.table.FeatureList.FeatureCount = 1
+
+
 # ---------------------------------------------------------------------------
 # _read_palt
 # ---------------------------------------------------------------------------
@@ -401,6 +457,63 @@ class TestInstallSS09Punctuation:
             ("uni3042", 920),
             ("uni3001.ss09", 900),
         ]
+
+    def test_sorts_gsub_features_and_remaps_langsys(self, synthetic_ttf):
+        hb = pytest.importorskip("uharfbuzz")
+        _install_synthetic_gsub_single_subst_feature(
+            synthetic_ttf,
+            "zero",
+            {"A": "A"},
+        )
+
+        _install_ss09_punctuation_feature(
+            synthetic_ttf,
+            {"uni3001": (0, -100)},
+        )
+
+        gsub = synthetic_ttf["GSUB"].table
+        tags = [
+            record.FeatureTag
+            for record in gsub.FeatureList.FeatureRecord
+        ]
+        assert tags == sorted(tags)
+        assert tags == ["ss09", "zero"]
+
+        for script_record in gsub.ScriptList.ScriptRecord:
+            script = script_record.Script
+            langsystems = []
+            if script.DefaultLangSys:
+                langsystems.append(script.DefaultLangSys)
+            langsystems.extend(
+                langsys_record.LangSys
+                for langsys_record in script.LangSysRecord or []
+            )
+
+            for langsys in langsystems:
+                referenced_tags = {
+                    gsub.FeatureList.FeatureRecord[index].FeatureTag
+                    for index in langsys.FeatureIndex
+                }
+                assert referenced_tags == {"ss09", "zero"}
+                assert gsub.FeatureList.FeatureRecord[
+                    langsys.ReqFeatureIndex
+                ].FeatureTag == "zero"
+
+        buffer = io.BytesIO()
+        synthetic_ttf.save(buffer)
+        font_data = buffer.getvalue()
+        glyph_order = synthetic_ttf.getGlyphOrder()
+        face = hb.Face(font_data)
+        hb_font = hb.Font(face)
+        hb_buffer = hb.Buffer()
+        hb_buffer.add_str("、")
+        hb_buffer.guess_segment_properties()
+        hb.shape(hb_font, hb_buffer, {"ss09": 1})
+
+        assert [
+            (glyph_order[info.codepoint], pos.x_advance)
+            for info, pos in zip(hb_buffer.glyph_infos, hb_buffer.glyph_positions)
+        ] == [("uni3001.ss09", 900)]
 
 
 # ---------------------------------------------------------------------------

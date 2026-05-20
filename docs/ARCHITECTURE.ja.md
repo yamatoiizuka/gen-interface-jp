@@ -302,7 +302,9 @@ LangSys から参照させる。`kern` は GPOS に残る。横方向の optiona
 GSUB 側で扱う: `_install_ss09_punctuation_feature` が従来の palt 残差から
 `.ss09` metric alternate を作り、UI 名「約物半角」の `ss09` stylistic set
 を生成する。既存の PairPos kerning は `.ss09` alternate にも拡張するため、
-substitution 後も `kern` は効き続ける。
+substitution 後も `kern` は効き続ける。`ss09` を追加した後は GSUB
+`FeatureList` を `FeatureTag` 順に戻し、LangSys の feature index を再マップする。
+lookup order は変更しない。
 
 ## 垂直メトリクスと Illustrator のテキストボックス問題
 

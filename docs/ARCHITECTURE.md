@@ -314,7 +314,9 @@ existing LangSys. `kern` remains in GPOS, and horizontal optional yakumono is
 handled as GSUB: `_install_ss09_punctuation_feature` creates `.ss09` metric
 alternates from the former palt residual and installs an `ss09` stylistic set
 with the UI name "約物半角". Existing PairPos kerning is extended to those
-alternates so `kern` continues to apply after substitution.
+alternates so `kern` continues to apply after substitution. After `ss09` is
+appended, the GSUB `FeatureList` is sorted back into `FeatureTag` order and
+all LangSys feature indices are remapped; lookup order is left untouched.
 
 ## Vertical Metrics & the Illustrator Box Problem
 
