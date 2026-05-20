@@ -79,13 +79,14 @@ FAMILIES × WEIGHTS の各組合せに対して:
   → font-baker bake: variable Noto → static TTF
                     inheritBase で designer/OFL/version を継承
                     weight だけを上書き
-  → inst を再読込し、キャッシュした variable から palt 取得
+  → inst を再読込し、キャッシュした variable から palt/vpal 取得
     1000-UPM の record を 2048-UPM のビルドグリッドへ換算
   → ss09 約物を除き Noto の palt エントリを全量で焼き込み
     ss09 約物は 34% を base に焼き、66% を ss09 残差として保持
     (palt なしグリフはメトリクス維持)
   → make_proportional で palt → hmtx に焼き込み
-    palt/vpal/halt/vhal を削除; 横方向の約物残差は final ss09 用に保持
+    palt/vpal/halt/vhal を削除; 横方向の palt 残差と縦方向の
+    vpal record は final ss09 用に保持
   → _apply_tracking で advance を広げ LSB を半分シフト
     ただし family["trackingIgnore"] の連続・隙間なし記号は除外
   → _apply_glyph_spacing で family["glyphSpacing"] の個別調整を適用
@@ -103,8 +104,8 @@ FAMILIES × WEIGHTS の各組合せに対して:
                      manufacturer / manufacturerURL を刻印
   → final TTF を一度 reload/save し、GSUB/GPOS coverage を
     merge 後の glyph ID 順に正規化
-  → merge 時の glyph rename 後も encoded glyph に optional 約物挙動が
-    残るよう、final cmap に対して yakumono-only ss09 を生成
+  → merge 時の glyph rename 後も horizontal / vertical glyph に optional
+    約物挙動が残るよう、final cmap / glyph 名に対して yakumono-only ss09 を生成
 ```
 
 ### 2. Web 用サブセット化 (`webfont.build`)
@@ -171,9 +172,11 @@ inst に対して 4 つのサブパスを in-place で実行:
    stylistic set「約物半角」用に保持する。Noto の典型的な `XAdvance=-500` の約物では、
    palt-off で `-170` が base advance に焼かれ、`ss09` 有効時に残り
    `-330` が適用される
-   (いずれも UPM 換算前の設計値)。runtime `vpal` は再生成しない。
-   final font では `palt`, `vpal`, `halt`, `vhal` を削除し、optional
-   約物 spacing は `ss09` だけで公開する。palt なしグリフは自動的に
+   (いずれも UPM 換算前の設計値)。runtime `vpal` は feature としては
+   再生成しないが、選択した約物 record は縦組み用 `.ss09` alternate の
+   source data として保持し、`vmtx` に縦方向の placement / advance delta を
+   焼き込む。final font では `palt`, `vpal`, `halt`, `vhal` を削除し、
+   optional 約物 spacing は `ss09` だけで公開する。palt なしグリフは自動的に
    sidebearing を詰めない; 後続の明示的な spacing ルールが触らない限り
    元の `hmtx` を維持する。
    `U+30FB` (・) は Noto では `U+2027` (‧) と同じ `uni2027` を共有して
@@ -242,7 +245,8 @@ release zip / npm package / site metadata と同じ project/release version を
 "https://yamatoiizuka.com"` でリリース TTF の nameID 8 / 11 を刻印。
 merge 後は final TTF を一度 fontTools で reload/save し、GSUB/GPOS coverage を
 最終 glyph order に合わせて正規化する。その後、merge 前に codepoint keyed で
-保持した最小 runtime `ss09` 挙動を final cmap に対して生成する。
+保持した横方向 record と codepoint / glyph keyed の縦方向 record から、
+最小 runtime `ss09` 挙動を final cmap / glyph order に対して生成する。
 これは `U+FF40` (｀) のように、Noto では `U+2035` と同じ `uni2035`
 を共有するが、Inter 側の `U+2035` と衝突して merge 後に
 `uni2035.orig` へ rename される glyph で必要になる。この final install は
@@ -267,17 +271,21 @@ yakumono-only `ss09` として再生成する。本プロジェクトでは
 `RUNTIME_PALT_BASE_SCALE = 0.34` を使うため、palt-off の約物はすでに部分的に
 詰まり (典型的な `-500` palt advance なら UPM 換算前で `-170`)、`ss09` を
 有効にすると従来の Noto full palt 目標まで到達する。
-production build では `PALT_FEATURE_CHARS` (48 文字) を唯一の runtime
-約物 target set として使う。これにより、焼き込み済みの kana / Latin に
-palt が二重適用されることを避けながら、optional 約物 spacing は `ss09`
-に集約する。TrueType アウトラインのみ対応 (palt のベイクは `glyf` に書き戻すので
+production build では横方向の `ss09` target に `PALT_FEATURE_CHARS`
+(48 文字)、縦方向の `ss09` target に `SS09_VERTICAL_FEATURE_CHARS` と
+`SS09_VERTICAL_FEATURE_GLYPHS` を使う。後者は Noto の `vpal` 値を
+source data として使うが、runtime `vpal` feature は公開せず alternate glyph
+metrics に焼き込む。これにより、焼き込み済みの kana / Latin に palt が
+二重適用されることを避けながら、optional 約物 spacing は `ss09` に集約する。
+TrueType アウトラインのみ対応 (palt のベイクは `glyf` に書き戻すので
 CFF は対象外)。
 Inter との merge では base 側 glyph が rename されることがあるため、
-ビルドは merge 前に横方向の残差を codepoint 単位で保持し、merge 後の final
-cmap に対して retarget する。final record には Noto optical scale
-(`SCALE = 0.925`) をこの時点でだけ掛ける。pre-merge の `palt_data` は
-active UPM grid のままにし、焼き込み base metrics は merge 時に一度だけ
-scale される。
+ビルドは merge 前に横方向の残差を codepoint 単位で、縦方向の調整を
+codepoint または glyph 名で保持し、merge 後の final cmap / glyph order に
+対して retarget する。final record には Noto optical scale (`SCALE = 0.925`)
+をこの時点でだけ掛ける。pre-merge の `palt_data` / `vpal_data` は active
+UPM grid のままにし、焼き込み base metrics は merge 時に一度だけ scale
+される。
 
 `_remove_prop_features` は GPOS を 2 段で歩く: FeatureRecord の削除と、
 それに対応する LangSys インデックスの再マップ。レコード削除は後ろの全
@@ -287,10 +295,12 @@ scale される。
 残す。`kern` は GPOS に残る。横方向の optional 約物は
 GSUB 側で扱う: `_install_ss09_punctuation_feature` が従来の palt 残差から
 `.ss09` metric alternate を作り、UI 名「約物半角」の `ss09` stylistic set
-を生成する。既存の PairPos kerning は `.ss09` alternate にも拡張するため、
-substitution 後も `kern` は効き続ける。alternate は元 glyph の `vmtx`
-record もコピーするため、保存後の font でも vertical metrics table の長さが
-拡張後の glyph order と揃う。`ss09` を追加した後は GSUB `FeatureList` を
+を生成する。縦組み用 glyph については、従来の vpal YPlacement / YAdvance を
+`vmtx` に焼き込んだ `.ss09` alternate を作る。既存の PairPos kerning は
+`.ss09` alternate にも拡張するため、substitution 後も `kern` は効き続ける。
+横方向のみの alternate は元 glyph の `vmtx` record もコピーするため、保存後の
+font でも vertical metrics table の長さが拡張後の glyph order と揃う。
+`ss09` を追加した後は GSUB `FeatureList` を
 `FeatureTag` 順に戻し、LangSys の feature index を再マップする。lookup order
 は変更しない。
 
@@ -478,8 +488,8 @@ PYTHONPATH=src python3 -m pytest        # 全テスト (~35 秒)
 
 | ファイル | テスト数 | 検証内容 |
 |---|---|---|
-| `test_font_build.py` | 103 | UPM 換算ポリシー、project-version metadata forwarding、グリフ名パース、kana / CJK 分類、GSUB/GPOS 走査、x-scale、bbox 除去、tracking、ss09 feature の retarget、final runtime feature scaling、InterVariable edge instance 互換性 |
-| `test_proportional.py` | 35 | palt/vpal 抽出、グリフ平行移動、GPOS feature 削除、runtime-palt/vpal helper coverage + base/residual 分割 + optional squeeze helper、ss09 生成 + shaping |
+| `test_font_build.py` | 108 | UPM 換算ポリシー、project-version metadata forwarding、グリフ名パース、kana / CJK 分類、GSUB/GPOS 走査、x-scale、bbox 除去、tracking、ss09 feature の retarget、final runtime feature scaling、InterVariable edge instance 互換性 |
+| `test_proportional.py` | 36 | palt/vpal 抽出、グリフ平行移動、GPOS feature 削除、runtime-palt/vpal helper coverage + base/residual 分割 + optional squeeze helper、ss09 生成 + shaping |
 | `test_release.py` | 2 | GitHub アセット URL 契約、npm パッケージレイアウト (files glob、license、README、self-host/CDN CSS root 配置) |
 | `test_webfont_build.py` | 42 | 範囲マージ / 重複除去、5 桁 hex 含む unicode-range、JIS 区マッピング、サブセット計画の配置 / 非重複 / 完全カバレッジ、ストラテジーパーサーのエッジケース |
 

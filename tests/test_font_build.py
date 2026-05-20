@@ -23,6 +23,7 @@ from font.build import (
     _final_output_metadata,
     _get_cjk_glyphs,
     _get_variable_palt,
+    _get_variable_vpal,
     _get_vert_alternates,
     _glyphs_for_codepoints,
     _glyph_codepoint,
@@ -31,6 +32,7 @@ from font.build import (
     _is_kana_or_punct,
     _project_version,
     _retarget_feature_adjustments,
+    _retarget_named_adjustments,
     _runtime_palt_residual_adjustment,
     _scale_design_adjustment,
     _scale_design_adjustments,
@@ -51,6 +53,9 @@ from font.build import (
     PALT_SPACE_ADJUSTMENTS,
     RUNTIME_PALT_BASE_SCALE,
     SOURCE_UPM,
+    SS09_SYNTHETIC_VERTICAL_ADJUSTMENTS,
+    SS09_VERTICAL_FEATURE_CHARS,
+    SS09_VERTICAL_FEATURE_GLYPHS,
     STATIC_INSTANCE_VARIATION_TABLES,
     SUB_EXCLUDE_CODEPOINTS,
     TARGET_UPM,
@@ -805,6 +810,35 @@ class TestPaltSymbolPolicy:
             assert family["runtimePalt"] == PALT_FEATURE_CHARS
             assert "runtimeVpal" not in family
 
+    def test_vertical_yakumono_uses_ss09_targets_not_runtime_vpal(self):
+        vpal = _get_variable_vpal()
+        assert "glyph17071" in SS09_VERTICAL_FEATURE_GLYPHS
+        assert SS09_SYNTHETIC_VERTICAL_ADJUSTMENTS == {
+            "uniFF1B": (250, -500),
+        }
+
+        for char in (
+            "〒・︐︑︒︗︘︵︶︷︸︹︺︻︼︽︾︿﹀﹁﹂﹃﹄﹇﹈"
+            "！＃＄％＆＊？￥；"
+        ):
+            assert char in SS09_VERTICAL_FEATURE_CHARS
+
+        expected_glyphs = {
+            "uni3012",  # 〒
+            "uni2027",  # ・ (Noto source glyph before U+30FB split)
+            "uniFE10",  # ︐
+            "uniFE11",  # ︑
+            "uniFE12",  # ︒
+            "uniFE35",  # ︵
+            "uniFE36",  # ︶
+            "uniFE41",  # ﹁
+            "uniFE42",  # ﹂
+            "uniFF01",  # ！
+            "uniFF05",  # ％
+        }
+
+        assert expected_glyphs <= set(vpal)
+
     def test_scales_final_runtime_feature_adjustments_by_optical_scale(self):
         adjustments = {
             0x3001: (-512, -1024),
@@ -904,6 +938,23 @@ class TestPaltSymbolPolicy:
         )
 
         assert adjustments == {0xFF40: (-199, -500)}
+
+    def test_named_fallback_adjustments_can_retarget_by_codepoint(self, synthetic_ttf):
+        synthetic_ttf.setGlyphOrder([
+            *synthetic_ttf.getGlyphOrder(),
+            "uniFF1B.orig",
+        ])
+        synthetic_ttf["glyf"]["uniFF1B.orig"] = copy.deepcopy(synthetic_ttf["glyf"]["A"])
+        synthetic_ttf["hmtx"].metrics["uniFF1B.orig"] = synthetic_ttf["hmtx"]["A"]
+        for table in synthetic_ttf["cmap"].tables:
+            table.cmap[0xFF1B] = "uniFF1B.orig"
+
+        retargeted = _retarget_named_adjustments(
+            synthetic_ttf,
+            {"uniFF1B": (250, -500), "glyph17071": (250, -500)},
+        )
+
+        assert retargeted == {"uniFF1B.orig": (250, -500)}
 
 # ---------------------------------------------------------------------------
 # _apply_glyph_spacing
@@ -1058,4 +1109,30 @@ class TestGetVariablePalt:
         # Two calls return the same cached dict — module-level cache.
         first = _get_variable_palt()
         second = _get_variable_palt()
+        assert first is second
+
+
+# ---------------------------------------------------------------------------
+# _get_variable_vpal
+# ---------------------------------------------------------------------------
+
+class TestGetVariableVpal:
+    """Cached vpal source data for vertical ss09 alternates."""
+
+    def test_returns_dict(self):
+        vpal = _get_variable_vpal()
+        assert isinstance(vpal, dict)
+        assert len(vpal) > 0
+
+    def test_returns_yplacement_yadvance_tuples(self):
+        vpal = _get_variable_vpal()
+        for gname, value in list(vpal.items())[:5]:
+            assert isinstance(gname, str)
+            assert isinstance(value, tuple)
+            assert len(value) == 2
+            assert all(isinstance(v, int) for v in value)
+
+    def test_cached_returns_same_instance(self):
+        first = _get_variable_vpal()
+        second = _get_variable_vpal()
         assert first is second
