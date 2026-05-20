@@ -385,6 +385,27 @@ class TestInstallSS09Punctuation:
         assert "約物半角" in names
         assert _feature_record(synthetic_ttf, "GPOS", "kern")
 
+    def test_installs_ss09_alternates_with_vmtx_metrics(self, synthetic_ttf):
+        vmtx = newTable("vmtx")
+        vmtx.metrics = {
+            glyph_name: (1000, 0)
+            for glyph_name in synthetic_ttf.getGlyphOrder()
+        }
+        synthetic_ttf["vmtx"] = vmtx
+
+        _install_ss09_punctuation_feature(
+            synthetic_ttf,
+            {"uni3001": (-25, -100)},
+        )
+
+        assert synthetic_ttf["vmtx"].metrics["uni3001.ss09"] == (
+            1000,
+            0,
+        )
+        assert len(synthetic_ttf["vmtx"].metrics) == len(
+            synthetic_ttf.getGlyphOrder()
+        )
+
     def test_harfbuzz_uses_ss09_only_when_feature_is_enabled(self, synthetic_ttf):
         hb = pytest.importorskip("uharfbuzz")
         _install_synthetic_pairpos_kern(

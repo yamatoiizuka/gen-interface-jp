@@ -23,7 +23,6 @@ from font.build import (
     _final_output_metadata,
     _get_cjk_glyphs,
     _get_variable_palt,
-    _get_variable_vpal,
     _get_vert_alternates,
     _glyphs_for_codepoints,
     _glyph_codepoint,
@@ -32,7 +31,6 @@ from font.build import (
     _is_kana_or_punct,
     _project_version,
     _retarget_feature_adjustments,
-    _retarget_named_adjustments,
     _runtime_palt_residual_adjustment,
     _scale_design_adjustment,
     _scale_design_adjustments,
@@ -55,10 +53,8 @@ from font.build import (
     SOURCE_UPM,
     STATIC_INSTANCE_VARIATION_TABLES,
     SUB_EXCLUDE_CODEPOINTS,
-    SYNTHETIC_VPAL_ADJUSTMENTS,
     TARGET_UPM,
     TRACKING_IGNORE_CODEPOINTS,
-    VPAL_FEATURE_CHARS,
 )
 from font.proportional import _install_ss09_punctuation_feature
 from merge_fonts import parse_codepoint_list
@@ -804,6 +800,11 @@ class TestPaltSymbolPolicy:
         assert _runtime_palt_residual_adjustment((-250, -500)) == (-165, -330)
         assert _runtime_palt_residual_adjustment((-70, -140)) == (-46, -92)
 
+    def test_family_config_exposes_ss09_without_runtime_vpal(self):
+        for family in FAMILIES.values():
+            assert family["runtimePalt"] == PALT_FEATURE_CHARS
+            assert "runtimeVpal" not in family
+
     def test_scales_final_runtime_feature_adjustments_by_optical_scale(self):
         adjustments = {
             0x3001: (-512, -1024),
@@ -817,65 +818,11 @@ class TestPaltSymbolPolicy:
 
     def test_scales_glyph_keyed_final_runtime_feature_adjustments(self):
         adjustments = {
-            "uniFE10": (-512, -1024),
+            "uni3001.ss09": (-512, -1024),
         }
 
         assert _scale_feature_adjustments(adjustments, 0.925) == {
-            "uniFE10": (round(-512 * 0.925), round(-1024 * 0.925)),
-        }
-
-    def test_noto_vpal_yakumono_uses_separate_runtime_target_set(self):
-        vpal = _get_variable_vpal()
-        assert len(VPAL_FEATURE_CHARS) == 33
-
-        palt_overlap = set("！？・〒＃＄＆＊￥")
-        vpal_only = set("︐︑︒︗︘︵︶︷︸︹︺︻︼︽︾︿﹀﹁﹂﹃﹄﹇﹈％")
-
-        assert set(VPAL_FEATURE_CHARS) & set(PALT_FEATURE_CHARS) == palt_overlap
-        assert set(VPAL_FEATURE_CHARS) - set(PALT_FEATURE_CHARS) == vpal_only
-
-        expected_glyphs = {
-            "uni3012",  # 〒
-            "uni2027",  # ・ (Noto source glyph before U+30FB split)
-            "uniFF01",  # ！
-            "uniFF03",  # ＃
-            "uniFF04",  # ＄
-            "uniFF06",  # ＆
-            "uniFF0A",  # ＊
-            "uniFF1F",  # ？
-            "uniFFE5",  # ￥
-            "uniFE10",  # ︐
-            "uniFE11",  # ︑
-            "uniFE12",  # ︒
-            "uniFE17",  # ︗
-            "uniFE18",  # ︘
-            "uniFE35",  # ︵
-            "uniFE36",  # ︶
-            "uniFE37",  # ︷
-            "uniFE38",  # ︸
-            "uniFE39",  # ︹
-            "uniFE3A",  # ︺
-            "uniFE3B",  # ︻
-            "uniFE3C",  # ︼
-            "uniFE3D",  # ︽
-            "uniFE3E",  # ︾
-            "uniFE3F",  # ︿
-            "uniFE40",  # ﹀
-            "uniFE41",  # ﹁
-            "uniFE42",  # ﹂
-            "uniFE43",  # ﹃
-            "uniFE44",  # ﹄
-            "uniFE47",  # ﹇
-            "uniFE48",  # ﹈
-            "uniFF05",  # ％
-        }
-
-        assert expected_glyphs <= set(vpal)
-
-    def test_colon_vpal_is_synthesized_for_vertical_glyph(self):
-        assert SYNTHETIC_VPAL_ADJUSTMENTS == {
-            "glyph17071": (250, -500),
-            "uniFF1B": (250, -500),
+            "uni3001.ss09": (round(-512 * 0.925), round(-1024 * 0.925)),
         }
 
     def test_palt_spacing_adjustments_are_small_kana_only(self):
@@ -957,24 +904,6 @@ class TestPaltSymbolPolicy:
         )
 
         assert adjustments == {0xFF40: (-199, -500)}
-
-    def test_named_fallback_adjustments_can_retarget_by_codepoint(self, synthetic_ttf):
-        synthetic_ttf.setGlyphOrder([
-            *synthetic_ttf.getGlyphOrder(),
-            "uniFF1B.orig",
-        ])
-        synthetic_ttf["glyf"]["uniFF1B.orig"] = copy.deepcopy(synthetic_ttf["glyf"]["A"])
-        synthetic_ttf["hmtx"].metrics["uniFF1B.orig"] = synthetic_ttf["hmtx"]["A"]
-        for table in synthetic_ttf["cmap"].tables:
-            table.cmap[0xFF1B] = "uniFF1B.orig"
-
-        retargeted = _retarget_named_adjustments(
-            synthetic_ttf,
-            {"uniFF1B": (250, -500), "glyph17071": (250, -500)},
-        )
-
-        assert retargeted == {"uniFF1B.orig": (250, -500)}
-
 
 # ---------------------------------------------------------------------------
 # _apply_glyph_spacing
@@ -1129,31 +1058,4 @@ class TestGetVariablePalt:
         # Two calls return the same cached dict — module-level cache.
         first = _get_variable_palt()
         second = _get_variable_palt()
-        assert first is second
-
-
-# ---------------------------------------------------------------------------
-# _get_variable_vpal
-# ---------------------------------------------------------------------------
-
-class TestGetVariableVpal:
-    """Cached read of vpal from the vendor Noto Variable."""
-
-    def test_returns_dict(self):
-        vpal = _get_variable_vpal()
-        assert isinstance(vpal, dict)
-        assert len(vpal) > 0
-
-    def test_returns_yplacement_yadvance_tuples(self):
-        vpal = _get_variable_vpal()
-        for gname, value in list(vpal.items())[:5]:
-            assert isinstance(gname, str)
-            assert isinstance(value, tuple)
-            assert len(value) == 2
-            assert all(isinstance(v, int) for v in value)
-
-    def test_cached_returns_same_instance(self):
-        # Two calls return the same cached dict — module-level cache.
-        first = _get_variable_vpal()
-        second = _get_variable_vpal()
         assert first is second
