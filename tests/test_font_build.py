@@ -818,11 +818,11 @@ class TestPaltSymbolPolicy:
 
     def test_scales_glyph_keyed_final_runtime_feature_adjustments(self):
         adjustments = {
-            "uniFE10": (-512, -1024),
+            "uni3001.ss09": (-512, -1024),
         }
 
         assert _scale_feature_adjustments(adjustments, 0.925) == {
-            "uniFE10": (round(-512 * 0.925), round(-1024 * 0.925)),
+            "uni3001.ss09": (round(-512 * 0.925), round(-1024 * 0.925)),
         }
 
     def test_palt_spacing_adjustments_are_small_kana_only(self):
