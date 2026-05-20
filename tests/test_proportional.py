@@ -4,14 +4,163 @@ Covers palt extraction, glyph translation, GPOS feature removal, and the
 ``make_proportional`` integration that ties them together.
 """
 
+import io
+
+import pytest
+
+from fontTools.ttLib import newTable
+from fontTools.ttLib.tables import otTables
+
 from font.proportional import (
     PROP_FEATURES,
+    _install_ss09_punctuation_feature,
     _read_palt,
     _read_vpal,
     _remove_prop_features,
     _shift_glyph_x,
     make_proportional,
 )
+
+
+def _feature_record(font, table_tag: str, feature_tag: str):
+    table = font[table_tag].table
+    for index, record in enumerate(table.FeatureList.FeatureRecord):
+        if record.FeatureTag == feature_tag:
+            return index, record
+    raise AssertionError(f"{feature_tag} not found in {table_tag}")
+
+
+def _install_synthetic_pairpos_kern(
+    font,
+    first_glyph: str,
+    second_glyph: str,
+    x_advance: int,
+) -> None:
+    gpos = newTable("GPOS")
+    font["GPOS"] = gpos
+    gpos.table = otTables.GPOS()
+    gpos.table.Version = 0x00010000
+
+    langsys = otTables.LangSys()
+    langsys.LookupOrder = None
+    langsys.ReqFeatureIndex = 0xFFFF
+    langsys.FeatureIndex = [0]
+    langsys.FeatureCount = 1
+
+    script = otTables.Script()
+    script.DefaultLangSys = langsys
+    script.LangSysRecord = []
+    script.LangSysCount = 0
+
+    script_record = otTables.ScriptRecord()
+    script_record.ScriptTag = "DFLT"
+    script_record.Script = script
+
+    gpos.table.ScriptList = otTables.ScriptList()
+    gpos.table.ScriptList.ScriptRecord = [script_record]
+    gpos.table.ScriptList.ScriptCount = 1
+
+    value = otTables.ValueRecord()
+    value.XAdvance = x_advance
+
+    pair_record = otTables.PairValueRecord()
+    pair_record.SecondGlyph = second_glyph
+    pair_record.Value1 = value
+    pair_record.Value2 = None
+
+    pairset = otTables.PairSet()
+    pairset.PairValueRecord = [pair_record]
+    pairset.PairValueCount = 1
+
+    coverage = otTables.Coverage()
+    coverage.glyphs = [first_glyph]
+
+    subtable = otTables.PairPos()
+    subtable.Format = 1
+    subtable.Coverage = coverage
+    subtable.ValueFormat1 = 0x0004
+    subtable.ValueFormat2 = 0
+    subtable.PairSet = [pairset]
+    subtable.PairSetCount = 1
+
+    lookup = otTables.Lookup()
+    lookup.LookupType = 2
+    lookup.LookupFlag = 0
+    lookup.SubTable = [subtable]
+    lookup.SubTableCount = 1
+
+    gpos.table.LookupList = otTables.LookupList()
+    gpos.table.LookupList.Lookup = [lookup]
+    gpos.table.LookupList.LookupCount = 1
+
+    feature = otTables.Feature()
+    feature.FeatureParams = None
+    feature.LookupListIndex = [0]
+    feature.LookupCount = 1
+
+    feature_record = otTables.FeatureRecord()
+    feature_record.FeatureTag = "kern"
+    feature_record.Feature = feature
+
+    gpos.table.FeatureList = otTables.FeatureList()
+    gpos.table.FeatureList.FeatureRecord = [feature_record]
+    gpos.table.FeatureList.FeatureCount = 1
+
+
+def _install_synthetic_gsub_single_subst_feature(
+    font,
+    feature_tag: str,
+    mapping: dict[str, str],
+) -> None:
+    gsub = newTable("GSUB")
+    font["GSUB"] = gsub
+    gsub.table = otTables.GSUB()
+    gsub.table.Version = 0x00010000
+
+    langsys = otTables.LangSys()
+    langsys.LookupOrder = None
+    langsys.ReqFeatureIndex = 0
+    langsys.FeatureIndex = [0]
+    langsys.FeatureCount = 1
+
+    script = otTables.Script()
+    script.DefaultLangSys = langsys
+    script.LangSysRecord = []
+    script.LangSysCount = 0
+
+    script_record = otTables.ScriptRecord()
+    script_record.ScriptTag = "DFLT"
+    script_record.Script = script
+
+    gsub.table.ScriptList = otTables.ScriptList()
+    gsub.table.ScriptList.ScriptRecord = [script_record]
+    gsub.table.ScriptList.ScriptCount = 1
+
+    subtable = otTables.SingleSubst()
+    subtable.mapping = mapping
+
+    lookup = otTables.Lookup()
+    lookup.LookupType = 1
+    lookup.LookupFlag = 0
+    lookup.SubTable = [subtable]
+    lookup.SubTableCount = 1
+
+    gsub.table.LookupList = otTables.LookupList()
+    gsub.table.LookupList.Lookup = [lookup]
+    gsub.table.LookupList.LookupCount = 1
+
+    feature = otTables.Feature()
+    feature.FeatureParams = None
+    feature.LookupListIndex = [0]
+    feature.LookupCount = 1
+
+    feature_record = otTables.FeatureRecord()
+    feature_record.FeatureTag = feature_tag
+    feature_record.Feature = feature
+
+    gsub.table.FeatureList = otTables.FeatureList()
+    gsub.table.FeatureList.FeatureRecord = [feature_record]
+    gsub.table.FeatureList.FeatureCount = 1
 
 
 # ---------------------------------------------------------------------------
@@ -204,6 +353,170 @@ class TestRemovePropFeatures:
 
 
 # ---------------------------------------------------------------------------
+# ss09 punctuation feature
+# ---------------------------------------------------------------------------
+
+class TestInstallSS09Punctuation:
+    """GSUB ss09 construction for optional yakumono spacing."""
+
+    def test_installs_ss09_alternates_and_feature_name(self, synthetic_ttf):
+        _install_synthetic_pairpos_kern(
+            synthetic_ttf,
+            "uni3042",
+            "uni3001",
+            -80,
+        )
+        before_order = list(synthetic_ttf.getGlyphOrder())
+
+        _install_ss09_punctuation_feature(
+            synthetic_ttf,
+            {"uni3001": (-25, -100)},
+        )
+
+        assert synthetic_ttf.getGlyphOrder() == before_order + ["uni3001.ss09"]
+        feature_index, record = _feature_record(synthetic_ttf, "GSUB", "ss09")
+        assert feature_index >= 0
+        ui_name_id = record.Feature.FeatureParams.UINameID
+        names = {
+            name.toUnicode()
+            for name in synthetic_ttf["name"].names
+            if name.nameID == ui_name_id
+        }
+        assert "約物半角" in names
+        assert _feature_record(synthetic_ttf, "GPOS", "kern")
+
+    def test_harfbuzz_uses_ss09_only_when_feature_is_enabled(self, synthetic_ttf):
+        hb = pytest.importorskip("uharfbuzz")
+        _install_synthetic_pairpos_kern(
+            synthetic_ttf,
+            "uni3042",
+            "uni3001",
+            -80,
+        )
+        _install_ss09_punctuation_feature(
+            synthetic_ttf,
+            {"uni3001": (-25, -100)},
+        )
+        buffer = io.BytesIO()
+        synthetic_ttf.save(buffer)
+        font_data = buffer.getvalue()
+        glyph_order = synthetic_ttf.getGlyphOrder()
+
+        def shape(features):
+            face = hb.Face(font_data)
+            hb_font = hb.Font(face)
+            hb_buffer = hb.Buffer()
+            hb_buffer.add_str("、")
+            hb_buffer.guess_segment_properties()
+            hb.shape(hb_font, hb_buffer, features)
+            return [
+                (glyph_order[info.codepoint], pos.x_advance, pos.x_offset)
+                for info, pos in zip(hb_buffer.glyph_infos, hb_buffer.glyph_positions)
+            ]
+
+        assert shape({}) == [("uni3001", 1000, 0)]
+        assert shape({"kern": 1}) == [("uni3001", 1000, 0)]
+        assert shape({"ss09": 1}) == [("uni3001.ss09", 900, 0)]
+        assert shape({"kern": 1, "ss09": 1}) == [("uni3001.ss09", 900, 0)]
+
+    def test_harfbuzz_applies_ss09_and_kern_together(self, synthetic_ttf):
+        hb = pytest.importorskip("uharfbuzz")
+        _install_synthetic_pairpos_kern(
+            synthetic_ttf,
+            "uni3042",
+            "uni3001",
+            -80,
+        )
+        _install_ss09_punctuation_feature(
+            synthetic_ttf,
+            {"uni3001": (0, -100)},
+        )
+        buffer = io.BytesIO()
+        synthetic_ttf.save(buffer)
+        font_data = buffer.getvalue()
+        glyph_order = synthetic_ttf.getGlyphOrder()
+
+        def shape(features):
+            face = hb.Face(font_data)
+            hb_font = hb.Font(face)
+            hb_buffer = hb.Buffer()
+            hb_buffer.add_str("あ、")
+            hb_buffer.guess_segment_properties()
+            hb.shape(hb_font, hb_buffer, features)
+            return [
+                (glyph_order[info.codepoint], pos.x_advance)
+                for info, pos in zip(hb_buffer.glyph_infos, hb_buffer.glyph_positions)
+            ]
+
+        assert shape({"kern": 1}) == [("uni3042", 920), ("uni3001", 1000)]
+        assert shape({"ss09": 1, "kern": 0}) == [
+            ("uni3042", 1000),
+            ("uni3001.ss09", 900),
+        ]
+        assert shape({"kern": 1, "ss09": 1}) == [
+            ("uni3042", 920),
+            ("uni3001.ss09", 900),
+        ]
+
+    def test_sorts_gsub_features_and_remaps_langsys(self, synthetic_ttf):
+        hb = pytest.importorskip("uharfbuzz")
+        _install_synthetic_gsub_single_subst_feature(
+            synthetic_ttf,
+            "zero",
+            {"A": "A"},
+        )
+
+        _install_ss09_punctuation_feature(
+            synthetic_ttf,
+            {"uni3001": (0, -100)},
+        )
+
+        gsub = synthetic_ttf["GSUB"].table
+        tags = [
+            record.FeatureTag
+            for record in gsub.FeatureList.FeatureRecord
+        ]
+        assert tags == sorted(tags)
+        assert tags == ["ss09", "zero"]
+
+        for script_record in gsub.ScriptList.ScriptRecord:
+            script = script_record.Script
+            langsystems = []
+            if script.DefaultLangSys:
+                langsystems.append(script.DefaultLangSys)
+            langsystems.extend(
+                langsys_record.LangSys
+                for langsys_record in script.LangSysRecord or []
+            )
+
+            for langsys in langsystems:
+                referenced_tags = {
+                    gsub.FeatureList.FeatureRecord[index].FeatureTag
+                    for index in langsys.FeatureIndex
+                }
+                assert referenced_tags == {"ss09", "zero"}
+                assert gsub.FeatureList.FeatureRecord[
+                    langsys.ReqFeatureIndex
+                ].FeatureTag == "zero"
+
+        buffer = io.BytesIO()
+        synthetic_ttf.save(buffer)
+        font_data = buffer.getvalue()
+        glyph_order = synthetic_ttf.getGlyphOrder()
+        face = hb.Face(font_data)
+        hb_font = hb.Font(face)
+        hb_buffer = hb.Buffer()
+        hb_buffer.add_str("、")
+        hb_buffer.guess_segment_properties()
+        hb.shape(hb_font, hb_buffer, {"ss09": 1})
+
+        assert [
+            (glyph_order[info.codepoint], pos.x_advance)
+            for info, pos in zip(hb_buffer.glyph_infos, hb_buffer.glyph_positions)
+        ] == [("uni3001.ss09", 900)]
+
+
+# ---------------------------------------------------------------------------
 # make_proportional
 # ---------------------------------------------------------------------------
 
@@ -286,6 +599,31 @@ class TestMakeProportional:
                 x_advance - base_x_advance,
             )
         }
+
+    def test_runtime_palt_base_fraction_can_skip_live_palt_reinstall(self, noto_subset):
+        cmap = noto_subset.getBestCmap()
+        punct_glyph = cmap.get(0x3001)  # 、
+        palt = _read_palt(noto_subset)
+        if punct_glyph not in palt:
+            pytest.skip("subset palt does not cover U+3001")
+
+        before_aw, before_lsb = noto_subset["hmtx"][punct_glyph]
+        x_placement, x_advance = palt[punct_glyph]
+        base_x_placement = round(x_placement * 0.34)
+        base_x_advance = round(x_advance * 0.34)
+
+        make_proportional(
+            noto_subset,
+            runtime_palt={punct_glyph},
+            runtime_palt_base_scale=0.34,
+            install_runtime_palt=False,
+        )
+
+        assert noto_subset["hmtx"][punct_glyph] == (
+            before_aw + base_x_advance,
+            before_lsb + base_x_placement,
+        )
+        assert _read_palt(noto_subset) == {}
 
     def test_runtime_palt_and_vpal_can_be_reinstalled_together(self, noto_subset):
         cmap = noto_subset.getBestCmap()

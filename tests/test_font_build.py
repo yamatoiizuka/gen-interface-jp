@@ -60,6 +60,7 @@ from font.build import (
     TRACKING_IGNORE_CODEPOINTS,
     VPAL_FEATURE_CHARS,
 )
+from font.proportional import _install_ss09_punctuation_feature
 from merge_fonts import parse_codepoint_list
 
 
@@ -747,7 +748,7 @@ class TestApplyTracking:
 # ---------------------------------------------------------------------------
 
 class TestPaltSymbolPolicy:
-    """Full palt is baked by default; selected yakumono keeps split runtime palt."""
+    """Full palt is baked by default; selected yakumono keeps an ss09 residual."""
 
     def test_tracking_only_symbols_are_implicit_palt_entries(self):
         palt = _get_variable_palt()
@@ -772,7 +773,7 @@ class TestPaltSymbolPolicy:
         assert "uniFF57" not in palt  # ｗ
         assert "uniFF40" not in palt  # ｀
 
-    def test_yakumono_uses_runtime_palt_not_spacing(self):
+    def test_yakumono_uses_ss09_targets_not_spacing(self):
         assert len(PALT_FEATURE_CHARS) == 48
         for char in (
             "、。，．〈〉《》「」『』【】〔〕〖〗〘〙〚〛"
@@ -781,6 +782,22 @@ class TestPaltSymbolPolicy:
         ):
             assert char in PALT_FEATURE_CHARS
             assert char not in PALT_SPACE_ADJUSTMENTS
+
+    def test_ss09_install_preserves_inter_stylistic_sets(self):
+        inter_path = _default_inter_static_path(FAMILIES["normal"], "Regular")
+        if not Path(inter_path).is_file():
+            pytest.skip(f"Inter font not found at {inter_path}")
+        font = TTFont(inter_path)
+        before = _layout_feature_tags(font, "GSUB")
+        inter_sets = {f"ss{i:02d}" for i in range(1, 9)}
+        assert inter_sets <= before
+
+        _install_ss09_punctuation_feature(font, {"A": (0, -10)})
+
+        after_gsub = _layout_feature_tags(font, "GSUB")
+        after_gpos = _layout_feature_tags(font, "GPOS")
+        assert inter_sets | {"ss09"} <= after_gsub
+        assert "halt" not in after_gpos
 
     def test_runtime_palt_keeps_reduced_base_metrics(self):
         assert RUNTIME_PALT_BASE_SCALE == 0.34
