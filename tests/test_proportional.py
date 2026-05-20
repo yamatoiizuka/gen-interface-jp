@@ -4,6 +4,7 @@ Covers palt extraction, glyph translation, GPOS feature removal, and the
 ``make_proportional`` integration that ties them together.
 """
 
+import copy
 import io
 
 import pytest
@@ -405,6 +406,40 @@ class TestInstallSS09Punctuation:
         assert len(synthetic_ttf["vmtx"].metrics) == len(
             synthetic_ttf.getGlyphOrder()
         )
+
+    def test_installs_vertical_ss09_alternates_with_vmtx_delta(self, synthetic_ttf):
+        glyph_order = [*synthetic_ttf.getGlyphOrder(), "uniFE11"]
+        synthetic_ttf.setGlyphOrder(glyph_order)
+        synthetic_ttf["glyf"]["uniFE11"] = copy.deepcopy(
+            synthetic_ttf["glyf"]["uni3001"]
+        )
+        synthetic_ttf["hmtx"].metrics["uniFE11"] = synthetic_ttf["hmtx"]["uni3001"]
+        vmtx = newTable("vmtx")
+        vmtx.metrics = {
+            glyph_name: (1000, 100)
+            for glyph_name in synthetic_ttf.getGlyphOrder()
+        }
+        synthetic_ttf["vmtx"] = vmtx
+
+        _install_ss09_punctuation_feature(
+            synthetic_ttf,
+            {},
+            {"uniFE11": (250, -500)},
+        )
+
+        assert synthetic_ttf["hmtx"].metrics["uniFE11.ss09"] == (
+            synthetic_ttf["hmtx"].metrics["uniFE11"]
+        )
+        assert synthetic_ttf["vmtx"].metrics["uniFE11.ss09"] == (
+            500,
+            -150,
+        )
+        feature_index, _record = _feature_record(synthetic_ttf, "GSUB", "ss09")
+        lookup_index = synthetic_ttf["GSUB"].table.FeatureList.FeatureRecord[
+            feature_index
+        ].Feature.LookupListIndex[0]
+        lookup = synthetic_ttf["GSUB"].table.LookupList.Lookup[lookup_index]
+        assert lookup.SubTable[0].mapping["uniFE11"] == "uniFE11.ss09"
 
     def test_harfbuzz_uses_ss09_only_when_feature_is_enabled(self, synthetic_ttf):
         hb = pytest.importorskip("uharfbuzz")

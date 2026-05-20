@@ -488,15 +488,21 @@ def _install_vpal_feature(
 def _install_ss09_punctuation_feature(
     font: TTFont,
     adjustments: dict[str, tuple[int, int]],
+    vertical_adjustments: dict[str, tuple[int, int]] | None = None,
 ) -> None:
     """Install an ``ss09`` stylistic set for optional half-width yakumono.
 
     The default glyphs keep the reduced baked metrics. ``ss09`` substitutes
     to private alternate glyphs that carry the remaining palt delta in their
-    outline position and hmtx advance. PairPos kerning is extended to those
-    alternates so enabling ``ss09`` does not drop existing ``kern`` pairs.
+    outline position and hmtx advance. In vertical writing, the same feature
+    substitutes vertical-form glyphs to alternates whose vmtx carries the
+    former vpal delta. PairPos kerning is extended to those alternates so
+    enabling ``ss09`` does not drop existing ``kern`` pairs.
     """
     alternates = _create_metric_alternates(font, adjustments)
+    alternates.update(
+        _create_vertical_metric_alternates(font, vertical_adjustments or {})
+    )
     if not alternates:
         return
     _extend_pairpos_for_alternates(font, alternates)
@@ -544,6 +550,49 @@ def _create_metric_alternates(
         )
         if vmtx is not None and glyph_name in vmtx.metrics:
             vmtx.metrics[alternate_name] = vmtx.metrics[glyph_name]
+        alternates[glyph_name] = alternate_name
+
+    if alternates:
+        font.setGlyphOrder(glyph_order)
+        if "maxp" in font:
+            font["maxp"].numGlyphs = len(glyph_order)
+    return alternates
+
+
+def _create_vertical_metric_alternates(
+    font: TTFont,
+    adjustments: dict[str, tuple[int, int]],
+) -> dict[str, str]:
+    """Create suffixed glyph alternates carrying vertical metric deltas."""
+    if not adjustments or "glyf" not in font or "hmtx" not in font or "vmtx" not in font:
+        return {}
+
+    glyph_order = list(font.getGlyphOrder())
+    glyph_order_set = set(glyph_order)
+    glyf = font["glyf"]
+    hmtx = font["hmtx"]
+    vmtx = font["vmtx"]
+    alternates: dict[str, str] = {}
+
+    for glyph_name, (y_placement, y_advance) in adjustments.items():
+        if glyph_name not in glyph_order_set:
+            continue
+        if glyph_name not in glyf or glyph_name not in hmtx.metrics:
+            continue
+        if glyph_name not in vmtx.metrics:
+            continue
+        alternate_name = f"{glyph_name}{SS09_ALTERNATE_SUFFIX}"
+        if alternate_name not in glyph_order_set:
+            glyph_order.append(alternate_name)
+            glyph_order_set.add(alternate_name)
+            glyf[alternate_name] = copy.deepcopy(glyf[glyph_name])
+            hmtx[alternate_name] = hmtx[glyph_name]
+
+        advance_height, top_side_bearing = vmtx[glyph_name]
+        vmtx[alternate_name] = (
+            advance_height + y_advance,
+            top_side_bearing - y_placement,
+        )
         alternates[glyph_name] = alternate_name
 
     if alternates:

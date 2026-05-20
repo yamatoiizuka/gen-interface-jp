@@ -166,6 +166,25 @@ PALT_FEATURE_CHARS = (
 # remaining palt delta through ss09 alternates.
 RUNTIME_PALT_BASE_SCALE = 0.34
 
+# Vertical yakumono glyphs also live under the ss09 "約物半角" feature. The
+# build uses Noto's vpal records as source data but bakes them into .ss09 vmtx
+# alternates instead of exposing a runtime vpal feature.
+SS09_VERTICAL_FEATURE_CHARS = (
+    "〒", "・",
+    "︐", "︑", "︒", "︗", "︘",
+    "︵", "︶", "︷", "︸", "︹", "︺",
+    "︻", "︼", "︽", "︾", "︿", "﹀",
+    "﹁", "﹂", "﹃", "﹄", "﹇", "﹈",
+    "！", "＃", "＄", "％", "＆", "＊", "？", "￥", "；",
+)
+
+# U+FF1A (：) vertically substitutes to unmapped glyph17071, so codepoint
+# retargeting cannot reach it. U+FF1B (；) has no Noto vpal record.
+SS09_VERTICAL_FEATURE_GLYPHS = ("glyph17071",)
+SS09_SYNTHETIC_VERTICAL_ADJUSTMENTS = {
+    "uniFF1B": (250, -500),
+}
+
 # Glyphs listed here get full Noto palt baked like every other non-optional
 # palt glyph, then receive explicit hmtx spacing after tracking. Keep this
 # list limited to small kana that need breathing room after palt; yakumono
@@ -468,6 +487,7 @@ SCALE = 0.925
 # ---------------------------------------------------------------------------
 
 _variable_palt_cache: dict | None = None
+_variable_vpal_cache: dict | None = None
 
 
 def _get_variable_palt() -> dict[str, tuple[int, int]]:
@@ -487,6 +507,21 @@ def _get_variable_palt() -> dict[str, tuple[int, int]]:
         font = TTFont(NOTO_VARIABLE)
         _variable_palt_cache = _read_palt(font)
     return _variable_palt_cache
+
+
+def _get_variable_vpal() -> dict[str, tuple[int, int]]:
+    """Read vpal adjustments from the original Noto variable font (cached).
+
+    The production build does not expose runtime vpal. These records are only
+    used as source data for vertical ss09 metric alternates.
+    """
+    global _variable_vpal_cache
+    if _variable_vpal_cache is None:
+        from .proportional import _read_vpal
+
+        font = TTFont(NOTO_VARIABLE)
+        _variable_vpal_cache = _read_vpal(font)
+    return _variable_vpal_cache
 
 
 # ---------------------------------------------------------------------------
@@ -955,9 +990,31 @@ def _retarget_feature_adjustments(
     }
 
 
+def _retarget_named_adjustments(
+    font: TTFont,
+    adjustments_by_glyph: dict[str, tuple[int, int]],
+) -> dict[str, tuple[int, int]]:
+    """Map glyph-name fallback records onto the final font when possible."""
+    if not adjustments_by_glyph:
+        return {}
+    cmap = font.getBestCmap() or {}
+    glyph_order = set(font.getGlyphOrder())
+    retargeted = {}
+    for glyph_name, value in adjustments_by_glyph.items():
+        if glyph_name in glyph_order:
+            retargeted[glyph_name] = value
+            continue
+        cp = _glyph_codepoint(glyph_name)
+        if cp is not None and (target_glyph := cmap.get(cp)) in glyph_order:
+            retargeted[target_glyph] = value
+    return retargeted
+
+
 def _refresh_ss09_feature_after_merge(
     final_path: str,
     ss09_punctuation_by_codepoint: dict[int, tuple[int, int]],
+    ss09_vertical_by_codepoint: dict[int, tuple[int, int]],
+    ss09_vertical_by_glyph: dict[str, tuple[int, int]],
 ) -> None:
     """Install yakumono-only ss09 after merge.
 
@@ -972,9 +1029,20 @@ def _refresh_ss09_feature_after_merge(
         font,
         ss09_punctuation_by_codepoint,
     )
+    ss09_vertical_adjustments = _retarget_feature_adjustments(
+        font,
+        ss09_vertical_by_codepoint,
+    )
+    ss09_vertical_adjustments.update(
+        _retarget_named_adjustments(font, ss09_vertical_by_glyph)
+    )
 
     _remove_prop_features(font)
-    _install_ss09_punctuation_feature(font, ss09_adjustments)
+    _install_ss09_punctuation_feature(
+        font,
+        ss09_adjustments,
+        ss09_vertical_adjustments,
+    )
     font.save(final_path)
 
 
@@ -1219,13 +1287,23 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
     split_source = _split_cmap_codepoint_glyph(font, 0x30FB, "uni30FB")
     ss09_punctuation_glyphs = _glyphs_for_codepoints(font, ss09_punctuation_chars)
 
-    # Read palt from the variable source rather than the freshly-baked inst:
+    # Read palt/vpal from the variable source rather than the freshly-baked inst:
     # variable instantiation can leave proportional ValueRecords with zeroed
     # or otherwise stale placement/advance pairs. The cached variable read is
     # canonical across all weights.
     palt_data = _scale_design_adjustments(dict(_get_variable_palt()), font_upm)
     if split_source in palt_data:
         palt_data["uni30FB"] = palt_data[split_source]
+    vpal_data = _scale_design_adjustments(dict(_get_variable_vpal()), font_upm)
+    if split_source in vpal_data:
+        vpal_data["uni30FB"] = vpal_data[split_source]
+    synthetic_vertical_adjustments = _scale_design_adjustments(
+        SS09_SYNTHETIC_VERTICAL_ADJUSTMENTS,
+        font_upm,
+    )
+    for glyph_name, value in synthetic_vertical_adjustments.items():
+        if glyph_name in font.getGlyphOrder() and glyph_name not in vpal_data:
+            vpal_data[glyph_name] = value
     ss09_punctuation_by_codepoint = _runtime_palt_residuals_by_codepoint(
         _feature_adjustments_for_codepoints(
             font,
@@ -1233,6 +1311,16 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
             palt_data,
         )
     )
+    ss09_vertical_by_codepoint = _feature_adjustments_for_codepoints(
+        font,
+        SS09_VERTICAL_FEATURE_CHARS,
+        vpal_data,
+    )
+    ss09_vertical_by_glyph = {
+        glyph_name: vpal_data[glyph_name]
+        for glyph_name in SS09_VERTICAL_FEATURE_GLYPHS
+        if glyph_name in font.getGlyphOrder() and glyph_name in vpal_data
+    }
 
     # Bake Noto palt entries at full strength except ss09 yakumono, which
     # receive a reduced baked base. Their residual is captured above and later
@@ -1298,6 +1386,8 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
     _refresh_ss09_feature_after_merge(
         final_path,
         _scale_feature_adjustments(ss09_punctuation_by_codepoint, SCALE),
+        _scale_feature_adjustments(ss09_vertical_by_codepoint, SCALE),
+        _scale_feature_adjustments(ss09_vertical_by_glyph, SCALE),
     )
     return {
         "fontPath": final_path,
