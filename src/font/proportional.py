@@ -515,6 +515,7 @@ def _create_metric_alternates(
     glyph_order_set = set(glyph_order)
     glyf = font["glyf"]
     hmtx = font["hmtx"]
+    vmtx = font["vmtx"] if "vmtx" in font else None
     alternates: dict[str, str] = {}
 
     for glyph_name, (x_placement, x_advance) in adjustments.items():
@@ -541,6 +542,8 @@ def _create_metric_alternates(
             advance_width + x_advance,
             lsb + x_placement,
         )
+        if vmtx is not None and glyph_name in vmtx.metrics:
+            vmtx.metrics[alternate_name] = vmtx.metrics[glyph_name]
         alternates[glyph_name] = alternate_name
 
     if alternates:

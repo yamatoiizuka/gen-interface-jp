@@ -25,7 +25,7 @@ Gen Interface JP はフォントビルドパイプライン (アプリ/UI なし
         │         output.upm=2048                         │
         │             ↓                                   │
         │   [2/3] Proportionalise — proportional.py       │
-        │      palt → hmtx + 約物 ss09 + runtime vpal     │
+        │      palt → hmtx + 約物 ss09                    │
         │         tracking (連続記号は除外)              │
         │         + 極端な bbox の除去                    │
         │             ↓                                   │
@@ -79,14 +79,13 @@ FAMILIES × WEIGHTS の各組合せに対して:
   → font-baker bake: variable Noto → static TTF
                     inheritBase で designer/OFL/version を継承
                     weight だけを上書き
-  → inst を再読込し、キャッシュした variable から palt/vpal 取得
+  → inst を再読込し、キャッシュした variable から palt 取得
     1000-UPM の record を 2048-UPM のビルドグリッドへ換算
   → ss09 約物を除き Noto の palt エントリを全量で焼き込み
     ss09 約物は 34% を base に焼き、66% を ss09 残差として保持
     (palt なしグリフはメトリクス維持)
   → make_proportional で palt → hmtx に焼き込み
-    palt/vpal/halt/vhal を削除; runtime vpal は再生成し、
-    横方向の約物残差は final ss09 用に保持
+    palt/vpal/halt/vhal を削除; 横方向の約物残差は final ss09 用に保持
   → _apply_tracking で advance を広げ LSB を半分シフト
     ただし family["trackingIgnore"] の連続・隙間なし記号は除外
   → _apply_glyph_spacing で family["glyphSpacing"] の個別調整を適用
@@ -105,7 +104,7 @@ FAMILIES × WEIGHTS の各組合せに対して:
   → final TTF を一度 reload/save し、GSUB/GPOS coverage を
     merge 後の glyph ID 順に正規化
   → merge 時の glyph rename 後も encoded glyph に optional 約物挙動が
-    残るよう、final cmap に対して yakumono-only ss09 と runtime vpal を生成
+    残るよう、final cmap に対して yakumono-only ss09 を生成
 ```
 
 ### 2. Web 用サブセット化 (`webfont.build`)
@@ -160,7 +159,7 @@ palt record を持ちうるため対象に含める。
 
 inst に対して 4 つのサブパスを in-place で実行:
 
-1. **palt のベイク / ss09 + runtime vpal** (`proportional.make_proportional`) — palt 値は
+1. **palt のベイク / 約物 ss09** (`proportional.make_proportional`) — palt 値は
    キャッシュ済みの variable から読む (instantiation で非デフォルト軸位置の
    palt ValueRecord が壊れることがあるため)。その値は Noto の 1000-UPM
    ソースグリッドから、実際の 2048-UPM ビルドグリッドへ換算する。
@@ -172,14 +171,9 @@ inst に対して 4 つのサブパスを in-place で実行:
    stylistic set「約物半角」用に保持する。Noto の典型的な `XAdvance=-500` の約物では、
    palt-off で `-170` が base advance に焼かれ、`ss09` 有効時に残り
    `-330` が適用される
-   (いずれも UPM 換算前の設計値)。
-   Noto の `vpal` も同じ variable から読み、
-   `VPAL_FEATURE_CHARS` に列挙した Unicode-mapped
-   約物 33 glyph (縦組み presentation form と全角パーセントを含む) を
-   live `vpal` として再生成する。全角コロン / セミコロンは Noto に palt は
-   あるが vpal がなく、縦組みコロンは unmapped の `glyph17071` に
-   置換されるため、小さな合成 fallback を `SYNTHETIC_VPAL_ADJUSTMENTS` で
-   足す。`vpal` は `hmtx` には焼き込まない。palt なしグリフは自動的に
+   (いずれも UPM 換算前の設計値)。runtime `vpal` は再生成しない。
+   final font では `palt`, `vpal`, `halt`, `vhal` を削除し、optional
+   約物 spacing は `ss09` だけで公開する。palt なしグリフは自動的に
    sidebearing を詰めない; 後続の明示的な spacing ルールが触らない限り
    元の `hmtx` を維持する。
    `U+30FB` (・) は Noto では `U+2027` (‧) と同じ `uni2027` を共有して
@@ -210,8 +204,7 @@ inst に対して 4 つのサブパスを in-place で実行:
    足す。大半の小書き仮名は左右 15 units を基準にしつつ、カタカナの
    小書き「ィ」「ャ」や、ひらがなの小書き「ょ」などは見え方に合わせて
    個別値を持つ。`U+30FB` (・) を含む約物はここでは扱わない: tracking は
-   通常どおり通し、横方向の詰めは明示的な `ss09` feature に任せる。縦方向の
-   proportional spacing は別集合の `VPAL_FEATURE_CHARS` で制御する。
+   通常どおり通し、横方向の詰めは明示的な `ss09` feature に任せる。
 4. **bbox 除去** (`_strip_extreme_glyphs`) — 下記 [垂直メトリクス] 参照。
 
 オプションの **横スケール** (`xScale` 設定、現在未使用) は上記の後に
@@ -249,12 +242,12 @@ release zip / npm package / site metadata と同じ project/release version を
 "https://yamatoiizuka.com"` でリリース TTF の nameID 8 / 11 を刻印。
 merge 後は final TTF を一度 fontTools で reload/save し、GSUB/GPOS coverage を
 最終 glyph order に合わせて正規化する。その後、merge 前に codepoint keyed で
-保持した最小 runtime `ss09` / `vpal` 挙動を final cmap に対して生成する。
+保持した最小 runtime `ss09` 挙動を final cmap に対して生成する。
 これは `U+FF40` (｀) のように、Noto では `U+2035` と同じ `uni2035`
 を共有するが、Inter 側の `U+2035` と衝突して merge 後に
 `uni2035.orig` へ rename される glyph で必要になる。この final install は
 merge 後に行うため、保持していた残差 record も `SCALE` で換算し、live `ss09`
-alternate と `vpal` の placement / advance が光学スケール済みの Noto base と揃うようにする。
+alternate が光学スケール済みの Noto base と揃うようにする。
 
 ## プロポーショナルメトリクス (`font/proportional.py`)
 
@@ -274,37 +267,32 @@ yakumono-only `ss09` として再生成する。本プロジェクトでは
 `RUNTIME_PALT_BASE_SCALE = 0.34` を使うため、palt-off の約物はすでに部分的に
 詰まり (典型的な `-500` palt advance なら UPM 換算前で `-170`)、`ss09` を
 有効にすると従来の Noto full palt 目標まで到達する。
-`runtime_vpal` が指定された場合は、一致する Noto `vpal` record も水平
-メトリクスに触らず新しい `vpal` feature として戻す。ビルドでは横方向の
-`ss09` target に `PALT_FEATURE_CHARS` (48 文字)、runtime `vpal` に
-`VPAL_FEATURE_CHARS` (33 文字) を使う。Noto の vpal には縦組み presentation
-form と `％` が含まれるため、この 2 つの集合は意図的に一致させない。
-`SYNTHETIC_VPAL_ADJUSTMENTS` は Noto が持たない全角コロン / セミコロンの
-縦方向 proportional record を補う。これにより、焼き込み済みの kana /
-Latin に palt が二重適用されることを避けながら、横方向の optional 約物 spacing
-は `ss09`、縦方向 spacing は runtime `vpal` として公開できる。
-TrueType アウトラインのみ対応 (palt のベイクは `glyf` に書き戻すので
+production build では `PALT_FEATURE_CHARS` (48 文字) を唯一の runtime
+約物 target set として使う。これにより、焼き込み済みの kana / Latin に
+palt が二重適用されることを避けながら、optional 約物 spacing は `ss09`
+に集約する。TrueType アウトラインのみ対応 (palt のベイクは `glyf` に書き戻すので
 CFF は対象外)。
 Inter との merge では base 側 glyph が rename されることがあるため、
-ビルドは merge 前に横方向の残差と runtime vpal 値を codepoint 単位で保持し、
-merge 後の final cmap に対して retarget する。final record には
-Noto optical scale (`SCALE = 0.925`) をこの時点でだけ掛ける。
-pre-merge の `palt_data` / `vpal_data` は active UPM grid のままにし、焼き込み
-base metrics は merge 時に一度だけ scale される。
+ビルドは merge 前に横方向の残差を codepoint 単位で保持し、merge 後の final
+cmap に対して retarget する。final record には Noto optical scale
+(`SCALE = 0.925`) をこの時点でだけ掛ける。pre-merge の `palt_data` は
+active UPM grid のままにし、焼き込み base metrics は merge 時に一度だけ
+scale される。
 
 `_remove_prop_features` は GPOS を 2 段で歩く: FeatureRecord の削除と、
 それに対応する LangSys インデックスの再マップ。レコード削除は後ろの全
 レコードのインデックスを動かすので、各 LangSys の `FeatureIndex` 配列を
 生き残ったレコードに対して再キーする必要がある。feature 削除後は、どの
 生存 feature からも参照されない lookup だけを pruning する; 共有 lookup は
-残す。再生成した runtime `vpal` lookup は削除後に追加し、既存の各
-LangSys から参照させる。`kern` は GPOS に残る。横方向の optional 約物は
+残す。`kern` は GPOS に残る。横方向の optional 約物は
 GSUB 側で扱う: `_install_ss09_punctuation_feature` が従来の palt 残差から
 `.ss09` metric alternate を作り、UI 名「約物半角」の `ss09` stylistic set
 を生成する。既存の PairPos kerning は `.ss09` alternate にも拡張するため、
-substitution 後も `kern` は効き続ける。`ss09` を追加した後は GSUB
-`FeatureList` を `FeatureTag` 順に戻し、LangSys の feature index を再マップする。
-lookup order は変更しない。
+substitution 後も `kern` は効き続ける。alternate は元 glyph の `vmtx`
+record もコピーするため、保存後の font でも vertical metrics table の長さが
+拡張後の glyph order と揃う。`ss09` を追加した後は GSUB `FeatureList` を
+`FeatureTag` 順に戻し、LangSys の feature index を再マップする。lookup order
+は変更しない。
 
 ## 垂直メトリクスと Illustrator のテキストボックス問題
 
@@ -464,8 +452,8 @@ PYTHONPATH=src python3 -m pytest        # 全テスト (~35 秒)
   `_is_cjk_codepoint`, `_is_kana_letter`, `_get_cjk_glyphs`,
   `_get_vert_alternates`, `_apply_x_scale`, `_strip_extreme_glyphs`,
   `_apply_tracking`, `_apply_glyph_spacing`, `_glyphs_for_codepoints`,
-  `_split_cmap_codepoint_glyph`, `_get_variable_palt`, `_get_variable_vpal`、
-  明示的な palt/ss09/vpal spacing 方針、Thin / ExtraBold 用の
+  `_split_cmap_codepoint_glyph`, `_get_variable_palt`、
+  明示的な palt/ss09 spacing 方針、Thin / ExtraBold 用の
   InterVariable edge instance source 選択。
 - **`src/font/verify_edge_instances.py`** — Thin / ExtraBold のビルド後検証。
   生成された InterVariable static instance が vendor static と同じ cmap /
@@ -490,8 +478,8 @@ PYTHONPATH=src python3 -m pytest        # 全テスト (~35 秒)
 
 | ファイル | テスト数 | 検証内容 |
 |---|---|---|
-| `test_font_build.py` | 108 | UPM 換算ポリシー、project-version metadata forwarding、グリフ名パース、kana / CJK 分類、GSUB/GPOS 走査、x-scale、bbox 除去、tracking、ss09/runtime feature の retarget、final runtime feature scaling、InterVariable edge instance 互換性 |
-| `test_proportional.py` | 33 | palt/vpal 抽出、グリフ平行移動、GPOS feature 削除、runtime-palt/vpal 再生成 + base/residual 分割 + optional squeeze helper、ss09 生成 + shaping |
+| `test_font_build.py` | 103 | UPM 換算ポリシー、project-version metadata forwarding、グリフ名パース、kana / CJK 分類、GSUB/GPOS 走査、x-scale、bbox 除去、tracking、ss09 feature の retarget、final runtime feature scaling、InterVariable edge instance 互換性 |
+| `test_proportional.py` | 35 | palt/vpal 抽出、グリフ平行移動、GPOS feature 削除、runtime-palt/vpal helper coverage + base/residual 分割 + optional squeeze helper、ss09 生成 + shaping |
 | `test_release.py` | 2 | GitHub アセット URL 契約、npm パッケージレイアウト (files glob、license、README、self-host/CDN CSS root 配置) |
 | `test_webfont_build.py` | 42 | 範囲マージ / 重複除去、5 桁 hex 含む unicode-range、JIS 区マッピング、サブセット計画の配置 / 非重複 / 完全カバレッジ、ストラテジーパーサーのエッジケース |
 
