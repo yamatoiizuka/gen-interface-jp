@@ -260,6 +260,9 @@ alternate も生成する。これらは Inter merge 後に `vert` / `vrt2` へ�
 final の CJK advance width を横 advance として使う。横組みの Inter
 メトリクスを変えずに、縦組みの upright Latin を日本語グリフと同じ列中心へ
 揃えるため。
+`vert` / `vrt2` の FeatureRecord は `latn` を含む全既存 LangSys から参照
+できるようにする。ブラウザやデザインアプリが縦組み日本語中の upright ASCII
+を Latin script run として分けることがあるため。
 
 ## プロポーショナルメトリクス (`font/proportional.py`)
 
@@ -311,7 +314,9 @@ font でも vertical metrics table の長さが拡張後の glyph order と揃�
 さらに `_install_vertical_centering_feature` が ASCII 英数字用の `.vcenter`
 alternate を作り、SingleSubst lookup を `vert` / `vrt2` に追加する。alternate
 は元の outline と vertical metrics をコピーしつつ、`hmtx` を final CJK
-列幅へ広げ、outline をその中央へ移動する。これらの GSUB 追加後は
+列幅へ広げ、outline をその中央へ移動する。既存の `vert` / `vrt2`
+FeatureRecord は feature tag 単位で全 LangSys から参照されるため、CJK run と
+`latn` run の両方が同じ lookup に到達できる。これらの GSUB 追加後は
 GSUB `FeatureList` を
 `FeatureTag` 順に戻し、LangSys の feature index を再マップする。lookup order
 は変更しない。
@@ -488,7 +493,8 @@ PYTHONPATH=src python3 -m pytest        # 全テスト (~35 秒)
   reduced palt scale、palt なしグリフのメトリクス維持、
   オプションの squeeze SB sidebearing 計算、
   palt_override の優先、CFF 拒否、feature 削除後の LangSys index 整合性)、
-  さらに `ss09` 生成、縦組み英数字中央揃え、HarfBuzz shaping。
+  さらに `ss09` 生成、縦組み英数字中央揃え、`latn` の LangSys 到達性、
+  HarfBuzz shaping。
 - **`tests/test_release.py`** — 公開配布の契約: GitHub アセット URL の形
   (サイトのダウンロードボタンが参照)、npm パッケージのレイアウト
   (`files` glob、生成 README、`cdn/*.css` エントリポイント、`license`
@@ -501,7 +507,7 @@ PYTHONPATH=src python3 -m pytest        # 全テスト (~35 秒)
 | ファイル | テスト数 | 検証内容 |
 |---|---|---|
 | `test_font_build.py` | 108 | UPM 換算ポリシー、project-version metadata forwarding、グリフ名パース、kana / CJK 分類、GSUB/GPOS 走査、x-scale、bbox 除去、tracking、ss09 feature の retarget、final runtime feature scaling、InterVariable edge instance 互換性 |
-| `test_proportional.py` | 39 | palt/vpal 抽出、グリフ平行移動、GPOS feature 削除、runtime-palt/vpal helper coverage + base/residual 分割 + optional squeeze helper、ss09 生成、縦組み英数字中央揃え + shaping |
+| `test_proportional.py` | 42 | palt/vpal 抽出、グリフ平行移動、GPOS feature 削除、runtime-palt/vpal helper coverage + base/residual 分割 + optional squeeze helper、ss09 生成、縦組み英数字中央揃え + latn shaping |
 | `test_release.py` | 2 | GitHub アセット URL 契約、npm パッケージレイアウト (files glob、license、README、self-host/CDN CSS root 配置) |
 | `test_webfont_build.py` | 42 | 範囲マージ / 重複除去、5 桁 hex 含む unicode-range、JIS 区マッピング、サブセット計画の配置 / 非重複 / 完全カバレッジ、ストラテジーパーサーのエッジケース |
 

@@ -818,7 +818,7 @@ def _append_single_subst_lookup_to_features(
     lookup_list.Lookup.append(lookup)
     lookup_list.LookupCount += 1
 
-    feature_indices_to_reference = []
+    tag_to_reference_index: dict[str, int] = {}
     feature_list = table.FeatureList
     existing_by_tag: dict[str, list[int]] = {}
     for index, record in enumerate(feature_list.FeatureRecord):
@@ -827,6 +827,7 @@ def _append_single_subst_lookup_to_features(
     for feature_tag in feature_tags:
         existing_indices = existing_by_tag.get(feature_tag)
         if existing_indices:
+            tag_to_reference_index[feature_tag] = existing_indices[0]
             for feature_index in existing_indices:
                 feature = feature_list.FeatureRecord[feature_index].Feature
                 lookups = list(feature.LookupListIndex or [])
@@ -848,19 +849,52 @@ def _append_single_subst_lookup_to_features(
         feature_index = feature_list.FeatureCount
         feature_list.FeatureRecord.append(feature_record)
         feature_list.FeatureCount += 1
-        feature_indices_to_reference.append(feature_index)
+        tag_to_reference_index[feature_tag] = feature_index
 
-    if feature_indices_to_reference:
-        for script_record in table.ScriptList.ScriptRecord:
-            script = script_record.Script
-            if script.DefaultLangSys:
-                for feature_index in feature_indices_to_reference:
-                    _append_feature_index(script.DefaultLangSys, feature_index)
-            if script.LangSysRecord:
-                for lsr in script.LangSysRecord:
-                    for feature_index in feature_indices_to_reference:
-                        _append_feature_index(lsr.LangSys, feature_index)
+    _ensure_feature_tags_referenced_by_all_langsys(table, tag_to_reference_index)
     _sort_feature_list_and_remap_langsys(table)
+
+
+def _ensure_feature_tags_referenced_by_all_langsys(
+    table,
+    tag_to_reference_index: dict[str, int],
+) -> None:
+    """Ensure every LangSys can reach the requested GSUB feature tags."""
+    if not tag_to_reference_index:
+        return
+    feature_list = getattr(table, "FeatureList", None)
+    script_list = getattr(table, "ScriptList", None)
+    if feature_list is None or script_list is None:
+        return
+
+    feature_records = list(getattr(feature_list, "FeatureRecord", None) or [])
+    if not feature_records:
+        return
+
+    for script_record in getattr(script_list, "ScriptRecord", None) or []:
+        script = script_record.Script
+        langsystems = []
+        if script.DefaultLangSys:
+            langsystems.append(script.DefaultLangSys)
+        for langsys_record in script.LangSysRecord or []:
+            langsystems.append(langsys_record.LangSys)
+
+        for langsys in langsystems:
+            feature_indices = list(langsys.FeatureIndex or [])
+            existing_tags = {
+                feature_records[index].FeatureTag
+                for index in feature_indices
+                if 0 <= index < len(feature_records)
+            }
+            for feature_tag, feature_index in tag_to_reference_index.items():
+                if feature_tag in existing_tags:
+                    continue
+                if not 0 <= feature_index < len(feature_records):
+                    continue
+                feature_indices.append(feature_index)
+                existing_tags.add(feature_tag)
+            langsys.FeatureIndex = feature_indices
+            langsys.FeatureCount = len(feature_indices)
 
 
 def _stylistic_set_feature_params(font: TTFont):

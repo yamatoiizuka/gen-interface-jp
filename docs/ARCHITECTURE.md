@@ -268,6 +268,9 @@ ASCII letters and digits. Those alternates are wired into `vert` / `vrt2`
 after the Inter merge, using the final CJK advance width as their horizontal
 advance so vertical shaping centers upright Latin on the same column axis as
 Japanese glyphs without changing horizontal Inter metrics.
+The `vert` / `vrt2` feature records are made reachable from every existing
+LangSys, including `latn`, because browsers and design apps may split upright
+ASCII in vertical Japanese text into a Latin script run.
 
 ## Proportional Metrics (`font/proportional.py`)
 
@@ -323,7 +326,9 @@ the expanded glyph order. `_install_vertical_centering_feature` then creates
 `.vcenter` alternates for ASCII alphanumerics and appends a SingleSubst lookup
 to `vert` / `vrt2`; the alternates copy the source outlines and vertical
 metrics but widen their `hmtx` to the final CJK column width and shift the
-outline to its center. After these GSUB additions are
+outline to its center. Existing `vert` / `vrt2` FeatureRecords are also
+referenced from every LangSys by feature tag, so CJK and `latn` runs can both
+reach the same lookup without duplicating it. After these GSUB additions are
 appended, the GSUB `FeatureList` is sorted back into `FeatureTag` order and
 all LangSys feature indices are remapped; lookup order is left untouched.
 
@@ -502,7 +507,8 @@ Tests live under `tests/`, split by surface:
   baking, optional runtime-palt reinstall, runtime-palt base/residual splitting,
   reduced palt scaling, non-palt metric preservation, optional squeeze SB sidebearing math, palt_override
   precedence, CFF rejection, LangSys index validity post-removal), plus
-  `ss09` construction, vertical Latin centering, and HarfBuzz shaping.
+  `ss09` construction, vertical Latin centering, LangSys reachability for
+  `latn`, and HarfBuzz shaping.
 - **`tests/test_release.py`** — public distribution contracts: GitHub
   asset URL shape (referenced by the site download button), npm package
   layout including `files` glob, generated README, `cdn/*.css` entrypoints,
@@ -515,7 +521,7 @@ Tests live under `tests/`, split by surface:
 | File | Tests | Verifies |
 |---|---|---|
 | `test_font_build.py` | 108 | UPM scaling policy, project-version metadata forwarding, glyph-name parsing, kana / CJK classification, GSUB/GPOS walk, x-scale, bbox strip, tracking, ss09 feature retargeting, final runtime feature scaling, InterVariable edge-instance compatibility |
-| `test_proportional.py` | 39 | palt/vpal extraction, glyph translation, GPOS feature removal, runtime-palt/vpal helper coverage + base/residual split + optional squeeze helper, ss09 construction, vertical Latin centering + shaping |
+| `test_proportional.py` | 42 | palt/vpal extraction, glyph translation, GPOS feature removal, runtime-palt/vpal helper coverage + base/residual split + optional squeeze helper, ss09 construction, vertical Latin centering + latn shaping |
 | `test_release.py` | 2 | GitHub asset URL contract, npm package layout (files glob, license, README, self-host/CDN CSS entrypoints at root) |
 | `test_webfont_build.py` | 42 | Range merge / dedup, unicode-range formatting incl. 5-digit, JIS row mapping, subset plan placement / non-overlap / coverage, strategy parser edge cases |
 

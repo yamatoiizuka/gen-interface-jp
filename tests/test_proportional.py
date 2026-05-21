@@ -165,6 +165,80 @@ def _install_synthetic_gsub_single_subst_feature(
     gsub.table.FeatureList.FeatureCount = 1
 
 
+def _install_synthetic_gsub_hani_vert_latn_without_vert(font) -> None:
+    """Install GSUB where hani reaches vert but latn initially does not."""
+    gsub = newTable("GSUB")
+    font["GSUB"] = gsub
+    gsub.table = otTables.GSUB()
+    gsub.table.Version = 0x00010000
+
+    def langsys(feature_indices: list[int], req_feature_index: int = 0xFFFF):
+        langsys_table = otTables.LangSys()
+        langsys_table.LookupOrder = None
+        langsys_table.ReqFeatureIndex = req_feature_index
+        langsys_table.FeatureIndex = feature_indices
+        langsys_table.FeatureCount = len(feature_indices)
+        return langsys_table
+
+    script_records = []
+    for script_tag, default_langsys in (
+        ("DFLT", langsys([])),
+        ("hani", langsys([1], req_feature_index=0)),
+        ("latn", langsys([0], req_feature_index=0)),
+    ):
+        script = otTables.Script()
+        script.DefaultLangSys = default_langsys
+        script.LangSysRecord = []
+        script.LangSysCount = 0
+
+        script_record = otTables.ScriptRecord()
+        script_record.ScriptTag = script_tag
+        script_record.Script = script
+        script_records.append(script_record)
+
+    gsub.table.ScriptList = otTables.ScriptList()
+    gsub.table.ScriptList.ScriptRecord = script_records
+    gsub.table.ScriptList.ScriptCount = len(script_records)
+
+    def single_subst_lookup(mapping: dict[str, str]):
+        subtable = otTables.SingleSubst()
+        subtable.mapping = mapping
+
+        lookup = otTables.Lookup()
+        lookup.LookupType = 1
+        lookup.LookupFlag = 0
+        lookup.SubTable = [subtable]
+        lookup.SubTableCount = 1
+        return lookup
+
+    gsub.table.LookupList = otTables.LookupList()
+    gsub.table.LookupList.Lookup = [
+        single_subst_lookup({"A": "A"}),
+        single_subst_lookup({"uni3001": "uni3001"}),
+    ]
+    gsub.table.LookupList.LookupCount = 2
+
+    def feature_record(feature_tag: str, lookup_indices: list[int]):
+        feature = otTables.Feature()
+        feature.FeatureParams = None
+        feature.LookupListIndex = lookup_indices
+        feature.LookupCount = len(lookup_indices)
+
+        record = otTables.FeatureRecord()
+        record.FeatureTag = feature_tag
+        record.Feature = feature
+        return record
+
+    gsub.table.FeatureList = otTables.FeatureList()
+    # Keep this intentionally unsorted so the install path must remap both
+    # FeatureIndex and ReqFeatureIndex after adding vrt2.
+    gsub.table.FeatureList.FeatureRecord = [
+        feature_record("zero", [0]),
+        feature_record("vert", [1]),
+    ]
+    gsub.table.FeatureList.FeatureCount = 2
+
+
 # ---------------------------------------------------------------------------
 # _read_palt
 # ---------------------------------------------------------------------------
@@ -617,6 +691,30 @@ class TestInstallVerticalCentering:
         for script_record in gsub.ScriptList.ScriptRecord:
             assert vert_index in script_record.Script.DefaultLangSys.FeatureIndex
 
+    def test_makes_existing_vert_features_reachable_from_latn(self, synthetic_ttf):
+        _install_synthetic_gsub_hani_vert_latn_without_vert(synthetic_ttf)
+
+        _install_vertical_centering_feature(synthetic_ttf, {"A"}, 1000)
+
+        gsub = synthetic_ttf["GSUB"].table
+        tags = [
+            record.FeatureTag
+            for record in gsub.FeatureList.FeatureRecord
+        ]
+        assert tags == ["vert", "vrt2", "zero"]
+
+        for script_record in gsub.ScriptList.ScriptRecord:
+            langsys = script_record.Script.DefaultLangSys
+            referenced_tags = {
+                gsub.FeatureList.FeatureRecord[index].FeatureTag
+                for index in langsys.FeatureIndex
+            }
+            assert {"vert", "vrt2"} <= referenced_tags
+            if script_record.ScriptTag in {"hani", "latn"}:
+                assert gsub.FeatureList.FeatureRecord[
+                    langsys.ReqFeatureIndex
+                ].FeatureTag == "zero"
+
     def test_harfbuzz_uses_centered_alternate_in_vertical_text(self, synthetic_ttf):
         hb = pytest.importorskip("uharfbuzz")
         _install_vertical_centering_feature(synthetic_ttf, {"A"}, 1000)
@@ -637,6 +735,49 @@ class TestInstallVerticalCentering:
             (glyph_order[info.codepoint], pos.x_offset)
             for info, pos in zip(hb_buffer.glyph_infos, hb_buffer.glyph_positions)
         ] == [("A.vcenter", -500)]
+
+    def test_harfbuzz_uses_centered_alternate_in_vertical_latin_run(self, synthetic_ttf):
+        hb = pytest.importorskip("uharfbuzz")
+        _install_synthetic_gsub_hani_vert_latn_without_vert(synthetic_ttf)
+        _install_vertical_centering_feature(synthetic_ttf, {"A"}, 1000)
+
+        buffer = io.BytesIO()
+        synthetic_ttf.save(buffer)
+        font_data = buffer.getvalue()
+        glyph_order = synthetic_ttf.getGlyphOrder()
+
+        hb_buffer = hb.Buffer()
+        hb_buffer.add_str("A")
+        hb_buffer.direction = "ttb"
+        hb_buffer.script = "latn"
+        hb_buffer.language = "en"
+        hb.shape(hb.Font(hb.Face(font_data)), hb_buffer, {"vert": 1, "vrt2": 1})
+
+        assert [
+            (glyph_order[info.codepoint], pos.x_offset)
+            for info, pos in zip(hb_buffer.glyph_infos, hb_buffer.glyph_positions)
+        ] == [("A.vcenter", -500)]
+
+    def test_horizontal_shaping_keeps_base_latin_glyph(self, synthetic_ttf):
+        hb = pytest.importorskip("uharfbuzz")
+        _install_vertical_centering_feature(synthetic_ttf, {"A"}, 1000)
+
+        buffer = io.BytesIO()
+        synthetic_ttf.save(buffer)
+        font_data = buffer.getvalue()
+        glyph_order = synthetic_ttf.getGlyphOrder()
+
+        hb_buffer = hb.Buffer()
+        hb_buffer.add_str("A")
+        hb_buffer.direction = "ltr"
+        hb_buffer.script = "latn"
+        hb_buffer.language = "en"
+        hb.shape(hb.Font(hb.Face(font_data)), hb_buffer, {})
+
+        assert [
+            (glyph_order[info.codepoint], pos.x_advance)
+            for info, pos in zip(hb_buffer.glyph_infos, hb_buffer.glyph_positions)
+        ] == [("A", 500)]
 
 
 # ---------------------------------------------------------------------------
