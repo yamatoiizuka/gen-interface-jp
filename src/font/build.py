@@ -35,7 +35,7 @@ from merge_fonts import merge_fonts, parse_codepoint_list
 from project_metadata import project_version as read_project_version
 from .proportional import (
     _install_ss09_punctuation_feature,
-    _install_vertical_centering_feature,
+    _install_vertical_base_axis,
     _remove_prop_features,
     _scale_position_adjustment,
     make_proportional,
@@ -186,14 +186,10 @@ SS09_SYNTHETIC_VERTICAL_ADJUSTMENTS = {
     "uniFF1B": (250, -500),
 }
 
-# In vertical writing, upright Inter Latin / digits are positioned from their
-# proportional horizontal advance, which makes each glyph land on a different
-# column center from CJK. Add vertical-only alternates for ASCII alphanumerics
-# after merge; horizontal text keeps the original Inter metrics.
-VERTICAL_LATIN_CENTERING_CHARS = tuple(
-    "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
-)
-VERTICAL_LATIN_CENTERING_REFERENCE_CHARS = ("日", "本", "一", "口", "あ")
+# Use representative CJK glyphs to derive the final vertical BASE axis width
+# after merge. This lets Illustrator align vertical Latin through BASE without
+# changing horizontal layout metrics or adding Latin-specific GSUB alternates.
+VERTICAL_BASE_AXIS_REFERENCE_CHARS = ("日", "本", "一", "口", "あ")
 
 # Glyphs listed here get full Noto palt baked like every other non-optional
 # palt glyph, then receive explicit hmtx spacing after tracking. Keep this
@@ -1020,20 +1016,15 @@ def _retarget_named_adjustments(
     return retargeted
 
 
-def _vertical_latin_centering_advance(font: TTFont) -> int:
-    """Return the final CJK column width used for vertical Latin centering."""
+def _vertical_base_axis_advance(font: TTFont) -> int:
+    """Return the final CJK column width used for BASE VertAxis coordinates."""
     cmap = font.getBestCmap() or {}
     hmtx = font["hmtx"]
-    for char in VERTICAL_LATIN_CENTERING_REFERENCE_CHARS:
+    for char in VERTICAL_BASE_AXIS_REFERENCE_CHARS:
         glyph_name = cmap.get(ord(char))
         if glyph_name in hmtx.metrics:
             return hmtx[glyph_name][0]
     return round(TARGET_UPM * SCALE)
-
-
-def _vertical_latin_centering_glyphs(font: TTFont) -> set[str]:
-    """Resolve ASCII alphanumerics to final glyph names for vertical centering."""
-    return _glyphs_for_codepoints(font, VERTICAL_LATIN_CENTERING_CHARS)
 
 
 def _refresh_ss09_feature_after_merge(
@@ -1069,10 +1060,9 @@ def _refresh_ss09_feature_after_merge(
         ss09_adjustments,
         ss09_vertical_adjustments,
     )
-    _install_vertical_centering_feature(
+    _install_vertical_base_axis(
         font,
-        _vertical_latin_centering_glyphs(font),
-        _vertical_latin_centering_advance(font),
+        _vertical_base_axis_advance(font),
     )
     font.save(final_path)
 

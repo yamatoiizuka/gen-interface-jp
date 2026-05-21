@@ -26,7 +26,7 @@ consumes the published webfont package.
         │             ↓                                   │
         │   [2/3] Proportionalise — proportional.py       │
         │      palt → hmtx + yakumono ss09                │
-        │      vertical Latin centering alternates        │
+        │      BASE VertAxis for vertical Latin alignment │
         │         tracking (with repeatable skips)        │
         │         + strip extreme bbox                    │
         │             ↓                                   │
@@ -263,14 +263,14 @@ before merge but may be renamed to `uni2035.orig` when Inter also provides
 `U+2035`. Because this final install happens after the merge, the saved
 residual records are also scaled by `SCALE` so live `ss09` alternates match
 the optically scaled Noto base.
-The same final-font pass also creates vertical-only `.vcenter` alternates for
-ASCII letters and digits. Those alternates are wired into `vert` / `vrt2`
-after the Inter merge, using the final CJK advance width as their horizontal
-advance so vertical shaping centers upright Latin on the same column axis as
-Japanese glyphs without changing horizontal Inter metrics.
-The `vert` / `vrt2` feature records are made reachable from every existing
-LangSys, including `latn`, because browsers and design apps may split upright
-ASCII in vertical Japanese text into a Latin script run.
+The same final-font pass also rebuilds `BASE.VertAxis` from the final CJK
+advance width so Illustrator can align Latin in vertical text through BASE.
+`BASE.HorizAxis` is never copied or modified by this pass; if a font ever
+reaches this step without a BASE table, the build creates one with
+`HorizAxis = NULL` and a vertical axis only. The vertical axis uses the
+Noto/Hiragino baseline tags (`icfb`, `icft`, `ideo`, `romn`) and scales their
+coordinates to the merged font's Noto column width, including the optical Noto
+scale and any family tracking already present in the CJK advance.
 
 ## Proportional Metrics (`font/proportional.py`)
 
@@ -322,13 +322,10 @@ alternates whose `vmtx` bakes the former vpal YPlacement/YAdvance. Existing
 PairPos kerning is extended to those alternates so `kern` continues to apply
 after substitution. Horizontal-only alternates copy their source glyphs'
 `vmtx` records so saved fonts keep vertical metrics table length in sync with
-the expanded glyph order. `_install_vertical_centering_feature` then creates
-`.vcenter` alternates for ASCII alphanumerics and appends a SingleSubst lookup
-to `vert` / `vrt2`; the alternates copy the source outlines and vertical
-metrics but widen their `hmtx` to the final CJK column width and shift the
-outline to its center. Existing `vert` / `vrt2` FeatureRecords are also
-referenced from every LangSys by feature tag, so CJK and `latn` runs can both
-reach the same lookup without duplicating it. After these GSUB additions are
+the expanded glyph order. `_install_vertical_base_axis` then replaces only
+`BASE.VertAxis` for vertical Latin alignment. This avoids Latin-specific
+GSUB alternates and keeps horizontal metrics untouched; existing
+`BASE.HorizAxis` is left as-is. After `ss09` is
 appended, the GSUB `FeatureList` is sorted back into `FeatureTag` order and
 all LangSys feature indices are remapped; lookup order is left untouched.
 
@@ -507,8 +504,7 @@ Tests live under `tests/`, split by surface:
   baking, optional runtime-palt reinstall, runtime-palt base/residual splitting,
   reduced palt scaling, non-palt metric preservation, optional squeeze SB sidebearing math, palt_override
   precedence, CFF rejection, LangSys index validity post-removal), plus
-  `ss09` construction, vertical Latin centering, LangSys reachability for
-  `latn`, and HarfBuzz shaping.
+  `ss09` construction, BASE VertAxis construction, and HarfBuzz shaping.
 - **`tests/test_release.py`** — public distribution contracts: GitHub
   asset URL shape (referenced by the site download button), npm package
   layout including `files` glob, generated README, `cdn/*.css` entrypoints,
@@ -521,7 +517,7 @@ Tests live under `tests/`, split by surface:
 | File | Tests | Verifies |
 |---|---|---|
 | `test_font_build.py` | 108 | UPM scaling policy, project-version metadata forwarding, glyph-name parsing, kana / CJK classification, GSUB/GPOS walk, x-scale, bbox strip, tracking, ss09 feature retargeting, final runtime feature scaling, InterVariable edge-instance compatibility |
-| `test_proportional.py` | 42 | palt/vpal extraction, glyph translation, GPOS feature removal, runtime-palt/vpal helper coverage + base/residual split + optional squeeze helper, ss09 construction, vertical Latin centering + latn shaping |
+| `test_proportional.py` | 40 | palt/vpal extraction, glyph translation, GPOS feature removal, runtime-palt/vpal helper coverage + base/residual split + optional squeeze helper, ss09 construction, BASE VertAxis construction |
 | `test_release.py` | 2 | GitHub asset URL contract, npm package layout (files glob, license, README, self-host/CDN CSS entrypoints at root) |
 | `test_webfont_build.py` | 42 | Range merge / dedup, unicode-range formatting incl. 5-digit, JIS row mapping, subset plan placement / non-overlap / coverage, strategy parser edge cases |
 

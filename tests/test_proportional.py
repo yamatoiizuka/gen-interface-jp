@@ -9,13 +9,13 @@ import io
 
 import pytest
 
-from fontTools.ttLib import newTable
+from fontTools.ttLib import TTFont, newTable
 from fontTools.ttLib.tables import otTables
 
 from font.proportional import (
     PROP_FEATURES,
     _install_ss09_punctuation_feature,
-    _install_vertical_centering_feature,
+    _install_vertical_base_axis,
     _read_palt,
     _read_vpal,
     _remove_prop_features,
@@ -163,80 +163,6 @@ def _install_synthetic_gsub_single_subst_feature(
     gsub.table.FeatureList = otTables.FeatureList()
     gsub.table.FeatureList.FeatureRecord = [feature_record]
     gsub.table.FeatureList.FeatureCount = 1
-
-
-def _install_synthetic_gsub_hani_vert_latn_without_vert(font) -> None:
-    """Install GSUB where hani reaches vert but latn initially does not."""
-    gsub = newTable("GSUB")
-    font["GSUB"] = gsub
-    gsub.table = otTables.GSUB()
-    gsub.table.Version = 0x00010000
-
-    def langsys(feature_indices: list[int], req_feature_index: int = 0xFFFF):
-        langsys_table = otTables.LangSys()
-        langsys_table.LookupOrder = None
-        langsys_table.ReqFeatureIndex = req_feature_index
-        langsys_table.FeatureIndex = feature_indices
-        langsys_table.FeatureCount = len(feature_indices)
-        return langsys_table
-
-    script_records = []
-    for script_tag, default_langsys in (
-        ("DFLT", langsys([])),
-        ("hani", langsys([1], req_feature_index=0)),
-        ("latn", langsys([0], req_feature_index=0)),
-    ):
-        script = otTables.Script()
-        script.DefaultLangSys = default_langsys
-        script.LangSysRecord = []
-        script.LangSysCount = 0
-
-        script_record = otTables.ScriptRecord()
-        script_record.ScriptTag = script_tag
-        script_record.Script = script
-        script_records.append(script_record)
-
-    gsub.table.ScriptList = otTables.ScriptList()
-    gsub.table.ScriptList.ScriptRecord = script_records
-    gsub.table.ScriptList.ScriptCount = len(script_records)
-
-    def single_subst_lookup(mapping: dict[str, str]):
-        subtable = otTables.SingleSubst()
-        subtable.mapping = mapping
-
-        lookup = otTables.Lookup()
-        lookup.LookupType = 1
-        lookup.LookupFlag = 0
-        lookup.SubTable = [subtable]
-        lookup.SubTableCount = 1
-        return lookup
-
-    gsub.table.LookupList = otTables.LookupList()
-    gsub.table.LookupList.Lookup = [
-        single_subst_lookup({"A": "A"}),
-        single_subst_lookup({"uni3001": "uni3001"}),
-    ]
-    gsub.table.LookupList.LookupCount = 2
-
-    def feature_record(feature_tag: str, lookup_indices: list[int]):
-        feature = otTables.Feature()
-        feature.FeatureParams = None
-        feature.LookupListIndex = lookup_indices
-        feature.LookupCount = len(lookup_indices)
-
-        record = otTables.FeatureRecord()
-        record.FeatureTag = feature_tag
-        record.Feature = feature
-        return record
-
-    gsub.table.FeatureList = otTables.FeatureList()
-    # Keep this intentionally unsorted so the install path must remap both
-    # FeatureIndex and ReqFeatureIndex after adding vrt2.
-    gsub.table.FeatureList.FeatureRecord = [
-        feature_record("zero", [0]),
-        feature_record("vert", [1]),
-    ]
-    gsub.table.FeatureList.FeatureCount = 2
 
 
 # ---------------------------------------------------------------------------
@@ -647,137 +573,85 @@ class TestInstallSS09Punctuation:
         ] == [("uni3001.ss09", 900)]
 
 
-class TestInstallVerticalCentering:
-    """GSUB vert/vrt2 construction for vertical Latin column centering."""
+class TestInstallVerticalBaseAxis:
+    """BASE VertAxis construction for vertical Latin alignment."""
 
-    def test_installs_centered_vertical_alternate(self, synthetic_ttf):
+    def _vert_axis(self, font):
+        return font["BASE"].table.VertAxis
+
+    def _coords_for_script(self, font, script_tag):
+        axis = self._vert_axis(font)
+        for record in axis.BaseScriptList.BaseScriptRecord:
+            if record.BaseScriptTag == script_tag:
+                values = record.BaseScript.BaseValues
+                return [
+                    coord.Coordinate
+                    for coord in values.BaseCoord
+                ]
+        raise AssertionError(f"{script_tag} not found")
+
+    def _default_tag_for_script(self, font, script_tag):
+        axis = self._vert_axis(font)
+        tags = axis.BaseTagList.BaselineTag
+        for record in axis.BaseScriptList.BaseScriptRecord:
+            if record.BaseScriptTag == script_tag:
+                values = record.BaseScript.BaseValues
+                return tags[values.DefaultIndex]
+        raise AssertionError(f"{script_tag} not found")
+
+    def test_creates_vert_axis_without_horizontal_axis(self, synthetic_ttf):
         before_order = list(synthetic_ttf.getGlyphOrder())
+        before_hmtx = dict(synthetic_ttf["hmtx"].metrics)
 
-        _install_vertical_centering_feature(synthetic_ttf, {"A"}, 1000)
+        _install_vertical_base_axis(synthetic_ttf, 1000)
 
-        assert synthetic_ttf.getGlyphOrder() == before_order + ["A.vcenter"]
-        assert synthetic_ttf["hmtx"].metrics["A.vcenter"] == (1000, 300)
-        assert synthetic_ttf["glyf"]["A.vcenter"].xMin == 300
-        assert synthetic_ttf["glyf"]["A.vcenter"].xMax == 700
-
-        _feature_record(synthetic_ttf, "GSUB", "vert")
-        _feature_record(synthetic_ttf, "GSUB", "vrt2")
-        gsub = synthetic_ttf["GSUB"].table
-        mappings = {}
-        for lookup in gsub.LookupList.Lookup:
-            if lookup.LookupType == 1:
-                for subtable in lookup.SubTable:
-                    mappings.update(getattr(subtable, "mapping", {}))
-        assert mappings["A"] == "A.vcenter"
-
-    def test_appends_to_existing_vert_feature(self, synthetic_ttf):
-        _install_synthetic_gsub_single_subst_feature(
-            synthetic_ttf,
-            "vert",
-            {"uni3001": "uni3001"},
-        )
-
-        _install_vertical_centering_feature(synthetic_ttf, {"A"}, 1000)
-
-        gsub = synthetic_ttf["GSUB"].table
-        tags = [
-            record.FeatureTag
-            for record in gsub.FeatureList.FeatureRecord
+        base = synthetic_ttf["BASE"].table
+        assert base.HorizAxis is None
+        assert base.VertAxis is not None
+        assert self._vert_axis(synthetic_ttf).BaseTagList.BaselineTag == [
+            "icfb", "icft", "ideo", "romn",
         ]
-        assert tags == ["vert", "vrt2"]
+        assert self._coords_for_script(synthetic_ttf, "hani") == [53, 947, 0, 120]
+        assert self._default_tag_for_script(synthetic_ttf, "hani") == "ideo"
+        assert self._default_tag_for_script(synthetic_ttf, "latn") == "romn"
+        assert synthetic_ttf.getGlyphOrder() == before_order
+        assert synthetic_ttf["hmtx"].metrics == before_hmtx
 
-        vert_index, vert_record = _feature_record(synthetic_ttf, "GSUB", "vert")
-        assert len(vert_record.Feature.LookupListIndex) == 2
-        for script_record in gsub.ScriptList.ScriptRecord:
-            assert vert_index in script_record.Script.DefaultLangSys.FeatureIndex
+    def test_replaces_vert_axis_without_touching_existing_horiz_axis(self, synthetic_ttf):
+        _install_vertical_base_axis(synthetic_ttf, 1000)
+        base = synthetic_ttf["BASE"].table
+        base.HorizAxis = base.VertAxis
+        original_horiz_axis = base.HorizAxis
 
-    def test_makes_existing_vert_features_reachable_from_latn(self, synthetic_ttf):
-        _install_synthetic_gsub_hani_vert_latn_without_vert(synthetic_ttf)
+        _install_vertical_base_axis(synthetic_ttf, 2000)
 
-        _install_vertical_centering_feature(synthetic_ttf, {"A"}, 1000)
+        assert base.HorizAxis is original_horiz_axis
+        assert base.VertAxis is not original_horiz_axis
+        assert self._coords_for_script(synthetic_ttf, "latn") == [106, 1894, 0, 240]
 
-        gsub = synthetic_ttf["GSUB"].table
-        tags = [
-            record.FeatureTag
-            for record in gsub.FeatureList.FeatureRecord
-        ]
-        assert tags == ["vert", "vrt2", "zero"]
+    def test_preserves_existing_vert_axis_script_defaults(self, synthetic_ttf):
+        _install_vertical_base_axis(synthetic_ttf, 1000)
+        axis = self._vert_axis(synthetic_ttf)
+        for record in axis.BaseScriptList.BaseScriptRecord:
+            if record.BaseScriptTag == "DFLT":
+                record.BaseScript.BaseValues.DefaultIndex = 3  # romn
+                break
 
-        for script_record in gsub.ScriptList.ScriptRecord:
-            langsys = script_record.Script.DefaultLangSys
-            referenced_tags = {
-                gsub.FeatureList.FeatureRecord[index].FeatureTag
-                for index in langsys.FeatureIndex
-            }
-            assert {"vert", "vrt2"} <= referenced_tags
-            if script_record.ScriptTag in {"hani", "latn"}:
-                assert gsub.FeatureList.FeatureRecord[
-                    langsys.ReqFeatureIndex
-                ].FeatureTag == "zero"
+        _install_vertical_base_axis(synthetic_ttf, 2000)
 
-    def test_harfbuzz_uses_centered_alternate_in_vertical_text(self, synthetic_ttf):
-        hb = pytest.importorskip("uharfbuzz")
-        _install_vertical_centering_feature(synthetic_ttf, {"A"}, 1000)
+        assert self._default_tag_for_script(synthetic_ttf, "DFLT") == "romn"
+        assert self._default_tag_for_script(synthetic_ttf, "hani") == "ideo"
 
-        buffer = io.BytesIO()
-        synthetic_ttf.save(buffer)
-        font_data = buffer.getvalue()
-        glyph_order = synthetic_ttf.getGlyphOrder()
-
-        hb_buffer = hb.Buffer()
-        hb_buffer.add_str("A")
-        hb_buffer.direction = "ttb"
-        hb_buffer.script = "hani"
-        hb_buffer.language = "ja"
-        hb.shape(hb.Font(hb.Face(font_data)), hb_buffer, {"vert": 1, "vrt2": 1})
-
-        assert [
-            (glyph_order[info.codepoint], pos.x_offset)
-            for info, pos in zip(hb_buffer.glyph_infos, hb_buffer.glyph_positions)
-        ] == [("A.vcenter", -500)]
-
-    def test_harfbuzz_uses_centered_alternate_in_vertical_latin_run(self, synthetic_ttf):
-        hb = pytest.importorskip("uharfbuzz")
-        _install_synthetic_gsub_hani_vert_latn_without_vert(synthetic_ttf)
-        _install_vertical_centering_feature(synthetic_ttf, {"A"}, 1000)
+    def test_base_table_round_trips(self, synthetic_ttf):
+        _install_vertical_base_axis(synthetic_ttf, 1000)
 
         buffer = io.BytesIO()
         synthetic_ttf.save(buffer)
-        font_data = buffer.getvalue()
-        glyph_order = synthetic_ttf.getGlyphOrder()
+        buffer.seek(0)
+        reloaded = TTFont(buffer)
 
-        hb_buffer = hb.Buffer()
-        hb_buffer.add_str("A")
-        hb_buffer.direction = "ttb"
-        hb_buffer.script = "latn"
-        hb_buffer.language = "en"
-        hb.shape(hb.Font(hb.Face(font_data)), hb_buffer, {"vert": 1, "vrt2": 1})
-
-        assert [
-            (glyph_order[info.codepoint], pos.x_offset)
-            for info, pos in zip(hb_buffer.glyph_infos, hb_buffer.glyph_positions)
-        ] == [("A.vcenter", -500)]
-
-    def test_horizontal_shaping_keeps_base_latin_glyph(self, synthetic_ttf):
-        hb = pytest.importorskip("uharfbuzz")
-        _install_vertical_centering_feature(synthetic_ttf, {"A"}, 1000)
-
-        buffer = io.BytesIO()
-        synthetic_ttf.save(buffer)
-        font_data = buffer.getvalue()
-        glyph_order = synthetic_ttf.getGlyphOrder()
-
-        hb_buffer = hb.Buffer()
-        hb_buffer.add_str("A")
-        hb_buffer.direction = "ltr"
-        hb_buffer.script = "latn"
-        hb_buffer.language = "en"
-        hb.shape(hb.Font(hb.Face(font_data)), hb_buffer, {})
-
-        assert [
-            (glyph_order[info.codepoint], pos.x_advance)
-            for info, pos in zip(hb_buffer.glyph_infos, hb_buffer.glyph_positions)
-        ] == [("A", 500)]
+        assert reloaded["BASE"].table.HorizAxis is None
+        assert self._coords_for_script(reloaded, "latn") == [53, 947, 0, 120]
 
 
 # ---------------------------------------------------------------------------

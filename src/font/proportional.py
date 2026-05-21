@@ -41,10 +41,28 @@ PROP_FEATURES = {"palt", "vpal", "halt", "vhal"}
 
 SS09_FEATURE_TAG = "ss09"
 SS09_ALTERNATE_SUFFIX = ".ss09"
-VERTICAL_CENTERING_ALTERNATE_SUFFIX = ".vcenter"
 SS09_UI_NAMES = {
     "en": "Half-width punctuation",
     "ja": "約物半角",
+}
+BASELINE_TAGS = ("icfb", "icft", "ideo", "romn")
+BASELINE_DEFAULTS_BY_SCRIPT = {
+    "DFLT": "ideo",
+    "hang": "ideo",
+    "hani": "ideo",
+    "kana": "ideo",
+    "cyrl": "romn",
+    "grek": "romn",
+    "latn": "romn",
+}
+BASELINE_FALLBACK_SCRIPTS = ("DFLT", "cyrl", "grek", "hani", "kana", "latn")
+BASELINE_COORDINATE_RATIOS = {
+    # Noto / Hiragino-style BASE VertAxis values, expressed against the final
+    # CJK column width so the axis follows our Noto optical scale and tracking.
+    "icfb": 53 / 1000,
+    "icft": 947 / 1000,
+    "ideo": 0,
+    "romn": 120 / 1000,
 }
 
 
@@ -510,27 +528,128 @@ def _install_ss09_punctuation_feature(
     _install_single_subst_feature(font, SS09_FEATURE_TAG, alternates)
 
 
-def _install_vertical_centering_feature(
+def _install_vertical_base_axis(
     font: TTFont,
-    glyph_names: set[str],
     target_advance_width: int,
 ) -> None:
-    """Install vertical-only alternates centered on a CJK column width.
+    """Install or replace ``BASE.VertAxis`` for vertical Latin alignment.
 
-    Browsers and Adobe apps position upright Latin in vertical text from the
-    glyph's horizontal advance. Inter's proportional advances therefore land
-    on different column centers from CJK glyphs. These alternates keep the
-    horizontal glyphs unchanged and only affect vertical shaping through
-    ``vert`` / ``vrt2``.
+    The target issue is vertical Latin alignment in Illustrator, so this pass
+    only adjusts the vertical BASE axis. Existing ``BASE.HorizAxis`` is left
+    untouched; if the font has no BASE table, a new table is created with
+    ``HorizAxis = None`` and ``VertAxis`` populated.
     """
-    alternates = _create_vertical_centering_alternates(
-        font,
-        glyph_names,
-        target_advance_width,
-    )
-    if not alternates:
+    if target_advance_width <= 0:
         return
-    _append_single_subst_lookup_to_features(font, ("vert", "vrt2"), alternates)
+
+    base = font.get("BASE")
+    if base is None:
+        base = newTable("BASE")
+        font["BASE"] = base
+        base.table = otTables.BASE()
+        base.table.Version = 0x00010000
+        base.table.HorizAxis = None
+        base.table.VertAxis = None
+        base.table.VarStore = None
+    elif base.table is None:
+        base.table = otTables.BASE()
+        base.table.Version = 0x00010000
+        base.table.HorizAxis = None
+        base.table.VertAxis = None
+        base.table.VarStore = None
+
+    if not hasattr(base.table, "Version"):
+        base.table.Version = 0x00010000
+    if not hasattr(base.table, "VarStore"):
+        base.table.VarStore = None
+
+    coordinates = {
+        tag: round(target_advance_width * ratio)
+        for tag, ratio in BASELINE_COORDINATE_RATIOS.items()
+    }
+    old_vert_axis = getattr(base.table, "VertAxis", None)
+    base.table.VertAxis = _build_vertical_base_axis(
+        _base_axis_script_defaults(old_vert_axis),
+        coordinates,
+    )
+
+
+def _base_axis_script_defaults(axis) -> dict[str, str]:
+    """Return script → default baseline tag for a replacement VertAxis."""
+    defaults = {
+        script_tag: BASELINE_DEFAULTS_BY_SCRIPT.get(script_tag, "ideo")
+        for script_tag in BASELINE_FALLBACK_SCRIPTS
+    }
+    if axis is None or getattr(axis, "BaseScriptList", None) is None:
+        return defaults
+
+    baseline_tags = []
+    tag_list = getattr(axis, "BaseTagList", None)
+    if tag_list is not None:
+        baseline_tags = list(getattr(tag_list, "BaselineTag", None) or [])
+
+    for record in getattr(axis.BaseScriptList, "BaseScriptRecord", None) or []:
+        values = getattr(record.BaseScript, "BaseValues", None)
+        default_tag = BASELINE_DEFAULTS_BY_SCRIPT.get(record.BaseScriptTag, "ideo")
+        if values is not None and 0 <= values.DefaultIndex < len(baseline_tags):
+            default_tag = baseline_tags[values.DefaultIndex]
+        if default_tag not in BASELINE_TAGS:
+            default_tag = BASELINE_DEFAULTS_BY_SCRIPT.get(record.BaseScriptTag, "ideo")
+        defaults[record.BaseScriptTag] = default_tag
+    return defaults
+
+
+def _build_vertical_base_axis(
+    script_defaults: dict[str, str],
+    coordinates: dict[str, int],
+):
+    axis = otTables.Axis()
+
+    tag_list = otTables.BaseTagList()
+    tag_list.BaselineTag = list(BASELINE_TAGS)
+    tag_list.BaseTagCount = len(tag_list.BaselineTag)
+    axis.BaseTagList = tag_list
+
+    script_list = otTables.BaseScriptList()
+    script_records = []
+    for script_tag in sorted(script_defaults):
+        default_tag = script_defaults[script_tag]
+        if default_tag not in BASELINE_TAGS:
+            default_tag = "ideo"
+
+        script_record = otTables.BaseScriptRecord()
+        script_record.BaseScriptTag = script_tag
+        script_record.BaseScript = _build_base_script(default_tag, coordinates)
+        script_records.append(script_record)
+
+    script_list.BaseScriptRecord = script_records
+    script_list.BaseScriptCount = len(script_records)
+    axis.BaseScriptList = script_list
+    return axis
+
+
+def _build_base_script(default_tag: str, coordinates: dict[str, int]):
+    script = otTables.BaseScript()
+    values = otTables.BaseValues()
+    values.DefaultIndex = BASELINE_TAGS.index(default_tag)
+    values.BaseCoord = [
+        _build_base_coord(coordinates[tag])
+        for tag in BASELINE_TAGS
+    ]
+    values.BaseCoordCount = len(values.BaseCoord)
+
+    script.BaseValues = values
+    script.DefaultMinMax = None
+    script.BaseLangSysRecord = []
+    script.BaseLangSysCount = 0
+    return script
+
+
+def _build_base_coord(coordinate: int):
+    coord = otTables.BaseCoord()
+    coord.Format = 1
+    coord.Coordinate = coordinate
+    return coord
 
 
 def _create_metric_alternates(
@@ -572,68 +691,6 @@ def _create_metric_alternates(
             advance_width + x_advance,
             lsb + x_placement,
         )
-        if vmtx is not None and glyph_name in vmtx.metrics:
-            vmtx.metrics[alternate_name] = vmtx.metrics[glyph_name]
-        alternates[glyph_name] = alternate_name
-
-    if alternates:
-        font.setGlyphOrder(glyph_order)
-        if "maxp" in font:
-            font["maxp"].numGlyphs = len(glyph_order)
-    return alternates
-
-
-def _create_vertical_centering_alternates(
-    font: TTFont,
-    glyph_names: set[str],
-    target_advance_width: int,
-) -> dict[str, str]:
-    """Create vertical-only glyphs whose hmtx centers on ``target_advance_width``."""
-    if (
-        not glyph_names
-        or target_advance_width <= 0
-        or "glyf" not in font
-        or "hmtx" not in font
-    ):
-        return {}
-
-    glyph_order = list(font.getGlyphOrder())
-    glyph_order_set = set(glyph_order)
-    glyph_order_index = {
-        glyph_name: index
-        for index, glyph_name in enumerate(glyph_order)
-    }
-    glyf = font["glyf"]
-    hmtx = font["hmtx"]
-    vmtx = font["vmtx"] if "vmtx" in font else None
-    alternates: dict[str, str] = {}
-
-    for glyph_name in sorted(
-        glyph_names,
-        key=lambda name: glyph_order_index.get(name, 1_000_000),
-    ):
-        if glyph_name not in glyph_order_set:
-            continue
-        if glyph_name not in glyf or glyph_name not in hmtx.metrics:
-            continue
-
-        alternate_name = f"{glyph_name}{VERTICAL_CENTERING_ALTERNATE_SUFFIX}"
-        if alternate_name not in glyph_order_set:
-            glyph_order.append(alternate_name)
-            glyph_order_set.add(alternate_name)
-
-        advance_width, lsb = hmtx[glyph_name]
-        x_shift = round((target_advance_width - advance_width) / 2)
-        alternate_glyph = copy.deepcopy(glyf[glyph_name])
-        if (
-            x_shift
-            and alternate_glyph.numberOfContours != 0
-            and hasattr(alternate_glyph, "xMin")
-            and alternate_glyph.xMin is not None
-        ):
-            _shift_glyph_x(alternate_glyph, x_shift)
-        glyf[alternate_name] = alternate_glyph
-        hmtx[alternate_name] = (target_advance_width, lsb + x_shift)
         if vmtx is not None and glyph_name in vmtx.metrics:
             vmtx.metrics[alternate_name] = vmtx.metrics[glyph_name]
         alternates[glyph_name] = alternate_name
@@ -763,138 +820,6 @@ def _install_single_subst_feature(
             for lsr in script.LangSysRecord:
                 _append_feature_index(lsr.LangSys, feature_index)
     _sort_feature_list_and_remap_langsys(table)
-
-
-def _append_single_subst_lookup_to_features(
-    font: TTFont,
-    feature_tags: tuple[str, ...],
-    substitutions: dict[str, str],
-) -> None:
-    """Append one SingleSubst lookup to existing or new GSUB features."""
-    if not feature_tags or not substitutions:
-        return
-
-    gsub = font.get("GSUB")
-    if gsub is None or gsub.table is None:
-        gsub = newTable("GSUB")
-        font["GSUB"] = gsub
-        gsub.table = otTables.GSUB()
-        gsub.table.Version = 0x00010000
-
-    table = gsub.table
-    if getattr(table, "LookupList", None) is None:
-        table.LookupList = otTables.LookupList()
-        table.LookupList.Lookup = []
-        table.LookupList.LookupCount = 0
-    if getattr(table, "FeatureList", None) is None:
-        table.FeatureList = otTables.FeatureList()
-        table.FeatureList.FeatureRecord = []
-        table.FeatureList.FeatureCount = 0
-    _ensure_script_list(table)
-
-    glyph_order = {glyph_name: i for i, glyph_name in enumerate(font.getGlyphOrder())}
-    glyphs = [
-        glyph_name for glyph_name in substitutions
-        if glyph_name in glyph_order and substitutions[glyph_name] in glyph_order
-    ]
-    glyphs.sort(key=glyph_order.__getitem__)
-    if not glyphs:
-        return
-
-    subtable = otTables.SingleSubst()
-    subtable.mapping = {
-        glyph_name: substitutions[glyph_name]
-        for glyph_name in glyphs
-    }
-
-    lookup = otTables.Lookup()
-    lookup.LookupType = 1
-    lookup.LookupFlag = 0
-    lookup.SubTable = [subtable]
-    lookup.SubTableCount = 1
-
-    lookup_list = table.LookupList
-    lookup_index = lookup_list.LookupCount
-    lookup_list.Lookup.append(lookup)
-    lookup_list.LookupCount += 1
-
-    tag_to_reference_index: dict[str, int] = {}
-    feature_list = table.FeatureList
-    existing_by_tag: dict[str, list[int]] = {}
-    for index, record in enumerate(feature_list.FeatureRecord):
-        existing_by_tag.setdefault(record.FeatureTag, []).append(index)
-
-    for feature_tag in feature_tags:
-        existing_indices = existing_by_tag.get(feature_tag)
-        if existing_indices:
-            tag_to_reference_index[feature_tag] = existing_indices[0]
-            for feature_index in existing_indices:
-                feature = feature_list.FeatureRecord[feature_index].Feature
-                lookups = list(feature.LookupListIndex or [])
-                if lookup_index not in lookups:
-                    lookups.append(lookup_index)
-                feature.LookupListIndex = lookups
-                feature.LookupCount = len(lookups)
-            continue
-
-        feature = otTables.Feature()
-        feature.FeatureParams = None
-        feature.LookupListIndex = [lookup_index]
-        feature.LookupCount = 1
-
-        feature_record = otTables.FeatureRecord()
-        feature_record.FeatureTag = feature_tag
-        feature_record.Feature = feature
-
-        feature_index = feature_list.FeatureCount
-        feature_list.FeatureRecord.append(feature_record)
-        feature_list.FeatureCount += 1
-        tag_to_reference_index[feature_tag] = feature_index
-
-    _ensure_feature_tags_referenced_by_all_langsys(table, tag_to_reference_index)
-    _sort_feature_list_and_remap_langsys(table)
-
-
-def _ensure_feature_tags_referenced_by_all_langsys(
-    table,
-    tag_to_reference_index: dict[str, int],
-) -> None:
-    """Ensure every LangSys can reach the requested GSUB feature tags."""
-    if not tag_to_reference_index:
-        return
-    feature_list = getattr(table, "FeatureList", None)
-    script_list = getattr(table, "ScriptList", None)
-    if feature_list is None or script_list is None:
-        return
-
-    feature_records = list(getattr(feature_list, "FeatureRecord", None) or [])
-    if not feature_records:
-        return
-
-    for script_record in getattr(script_list, "ScriptRecord", None) or []:
-        script = script_record.Script
-        langsystems = []
-        if script.DefaultLangSys:
-            langsystems.append(script.DefaultLangSys)
-        for langsys_record in script.LangSysRecord or []:
-            langsystems.append(langsys_record.LangSys)
-
-        for langsys in langsystems:
-            feature_indices = list(langsys.FeatureIndex or [])
-            existing_tags = {
-                feature_records[index].FeatureTag
-                for index in feature_indices
-                if 0 <= index < len(feature_records)
-            }
-            for feature_tag, feature_index in tag_to_reference_index.items():
-                if feature_tag in existing_tags:
-                    continue
-                if not 0 <= feature_index < len(feature_records):
-                    continue
-                feature_indices.append(feature_index)
-                existing_tags.add(feature_tag)
-            langsys.FeatureIndex = feature_indices
-            langsys.FeatureCount = len(feature_indices)
 
 
 def _stylistic_set_feature_params(font: TTFont):
