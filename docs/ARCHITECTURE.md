@@ -26,6 +26,7 @@ consumes the published webfont package.
         │             ↓                                   │
         │   [2/3] Proportionalise — proportional.py       │
         │      palt → hmtx + yakumono ss09                │
+        │      vertical Latin centering alternates        │
         │         tracking (with repeatable skips)        │
         │         + strip extreme bbox                    │
         │             ↓                                   │
@@ -107,6 +108,8 @@ For each (family, weight) in FAMILIES × WEIGHTS:
   → install yakumono-only ss09 against the final cmap / glyph names so
     merge-time glyph renames keep optional yakumono behavior on both
     horizontal and vertical glyphs
+  → install vertical-only Latin/digit centering alternates under vert/vrt2
+    so upright ASCII in vertical text uses the CJK column center
 ```
 
 ### 2. Subset for the Web (`webfont.build`)
@@ -260,6 +263,11 @@ before merge but may be renamed to `uni2035.orig` when Inter also provides
 `U+2035`. Because this final install happens after the merge, the saved
 residual records are also scaled by `SCALE` so live `ss09` alternates match
 the optically scaled Noto base.
+The same final-font pass also creates vertical-only `.vcenter` alternates for
+ASCII letters and digits. Those alternates are wired into `vert` / `vrt2`
+after the Inter merge, using the final CJK advance width as their horizontal
+advance so vertical shaping centers upright Latin on the same column axis as
+Japanese glyphs without changing horizontal Inter metrics.
 
 ## Proportional Metrics (`font/proportional.py`)
 
@@ -311,7 +319,11 @@ alternates whose `vmtx` bakes the former vpal YPlacement/YAdvance. Existing
 PairPos kerning is extended to those alternates so `kern` continues to apply
 after substitution. Horizontal-only alternates copy their source glyphs'
 `vmtx` records so saved fonts keep vertical metrics table length in sync with
-the expanded glyph order. After `ss09` is
+the expanded glyph order. `_install_vertical_centering_feature` then creates
+`.vcenter` alternates for ASCII alphanumerics and appends a SingleSubst lookup
+to `vert` / `vrt2`; the alternates copy the source outlines and vertical
+metrics but widen their `hmtx` to the final CJK column width and shift the
+outline to its center. After these GSUB additions are
 appended, the GSUB `FeatureList` is sorted back into `FeatureTag` order and
 all LangSys feature indices are remapped; lookup order is left untouched.
 
@@ -490,7 +502,7 @@ Tests live under `tests/`, split by surface:
   baking, optional runtime-palt reinstall, runtime-palt base/residual splitting,
   reduced palt scaling, non-palt metric preservation, optional squeeze SB sidebearing math, palt_override
   precedence, CFF rejection, LangSys index validity post-removal), plus
-  `ss09` construction and HarfBuzz shaping.
+  `ss09` construction, vertical Latin centering, and HarfBuzz shaping.
 - **`tests/test_release.py`** — public distribution contracts: GitHub
   asset URL shape (referenced by the site download button), npm package
   layout including `files` glob, generated README, `cdn/*.css` entrypoints,
@@ -503,7 +515,7 @@ Tests live under `tests/`, split by surface:
 | File | Tests | Verifies |
 |---|---|---|
 | `test_font_build.py` | 108 | UPM scaling policy, project-version metadata forwarding, glyph-name parsing, kana / CJK classification, GSUB/GPOS walk, x-scale, bbox strip, tracking, ss09 feature retargeting, final runtime feature scaling, InterVariable edge-instance compatibility |
-| `test_proportional.py` | 36 | palt/vpal extraction, glyph translation, GPOS feature removal, runtime-palt/vpal helper coverage + base/residual split + optional squeeze helper, ss09 construction + shaping |
+| `test_proportional.py` | 39 | palt/vpal extraction, glyph translation, GPOS feature removal, runtime-palt/vpal helper coverage + base/residual split + optional squeeze helper, ss09 construction, vertical Latin centering + shaping |
 | `test_release.py` | 2 | GitHub asset URL contract, npm package layout (files glob, license, README, self-host/CDN CSS entrypoints at root) |
 | `test_webfont_build.py` | 42 | Range merge / dedup, unicode-range formatting incl. 5-digit, JIS row mapping, subset plan placement / non-overlap / coverage, strategy parser edge cases |
 

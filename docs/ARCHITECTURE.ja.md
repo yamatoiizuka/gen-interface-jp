@@ -26,6 +26,7 @@ Gen Interface JP はフォントビルドパイプライン (アプリ/UI なし
         │             ↓                                   │
         │   [2/3] Proportionalise — proportional.py       │
         │      palt → hmtx + 約物 ss09                    │
+        │      縦組み英数字の中央揃え alternate           │
         │         tracking (連続記号は除外)              │
         │         + 極端な bbox の除去                    │
         │             ↓                                   │
@@ -106,6 +107,8 @@ FAMILIES × WEIGHTS の各組合せに対して:
     merge 後の glyph ID 順に正規化
   → merge 時の glyph rename 後も horizontal / vertical glyph に optional
     約物挙動が残るよう、final cmap / glyph 名に対して yakumono-only ss09 を生成
+  → 縦組み専用の英数字中央揃え alternate を vert/vrt2 に追加し、
+    upright ASCII が CJK と同じ列中心を使うようにする
 ```
 
 ### 2. Web 用サブセット化 (`webfont.build`)
@@ -252,6 +255,11 @@ merge 後は final TTF を一度 fontTools で reload/save し、GSUB/GPOS cover
 `uni2035.orig` へ rename される glyph で必要になる。この final install は
 merge 後に行うため、保持していた残差 record も `SCALE` で換算し、live `ss09`
 alternate が光学スケール済みの Noto base と揃うようにする。
+同じ final font pass で、ASCII 英字・数字用の縦組み専用 `.vcenter`
+alternate も生成する。これらは Inter merge 後に `vert` / `vrt2` へ追加し、
+final の CJK advance width を横 advance として使う。横組みの Inter
+メトリクスを変えずに、縦組みの upright Latin を日本語グリフと同じ列中心へ
+揃えるため。
 
 ## プロポーショナルメトリクス (`font/proportional.py`)
 
@@ -300,7 +308,11 @@ GSUB 側で扱う: `_install_ss09_punctuation_feature` が従来の palt 残差�
 `.ss09` alternate にも拡張するため、substitution 後も `kern` は効き続ける。
 横方向のみの alternate は元 glyph の `vmtx` record もコピーするため、保存後の
 font でも vertical metrics table の長さが拡張後の glyph order と揃う。
-`ss09` を追加した後は GSUB `FeatureList` を
+さらに `_install_vertical_centering_feature` が ASCII 英数字用の `.vcenter`
+alternate を作り、SingleSubst lookup を `vert` / `vrt2` に追加する。alternate
+は元の outline と vertical metrics をコピーしつつ、`hmtx` を final CJK
+列幅へ広げ、outline をその中央へ移動する。これらの GSUB 追加後は
+GSUB `FeatureList` を
 `FeatureTag` 順に戻し、LangSys の feature index を再マップする。lookup order
 は変更しない。
 
@@ -476,7 +488,7 @@ PYTHONPATH=src python3 -m pytest        # 全テスト (~35 秒)
   reduced palt scale、palt なしグリフのメトリクス維持、
   オプションの squeeze SB sidebearing 計算、
   palt_override の優先、CFF 拒否、feature 削除後の LangSys index 整合性)、
-  さらに `ss09` 生成と HarfBuzz shaping。
+  さらに `ss09` 生成、縦組み英数字中央揃え、HarfBuzz shaping。
 - **`tests/test_release.py`** — 公開配布の契約: GitHub アセット URL の形
   (サイトのダウンロードボタンが参照)、npm パッケージのレイアウト
   (`files` glob、生成 README、`cdn/*.css` エントリポイント、`license`
@@ -489,7 +501,7 @@ PYTHONPATH=src python3 -m pytest        # 全テスト (~35 秒)
 | ファイル | テスト数 | 検証内容 |
 |---|---|---|
 | `test_font_build.py` | 108 | UPM 換算ポリシー、project-version metadata forwarding、グリフ名パース、kana / CJK 分類、GSUB/GPOS 走査、x-scale、bbox 除去、tracking、ss09 feature の retarget、final runtime feature scaling、InterVariable edge instance 互換性 |
-| `test_proportional.py` | 36 | palt/vpal 抽出、グリフ平行移動、GPOS feature 削除、runtime-palt/vpal helper coverage + base/residual 分割 + optional squeeze helper、ss09 生成 + shaping |
+| `test_proportional.py` | 39 | palt/vpal 抽出、グリフ平行移動、GPOS feature 削除、runtime-palt/vpal helper coverage + base/residual 分割 + optional squeeze helper、ss09 生成、縦組み英数字中央揃え + shaping |
 | `test_release.py` | 2 | GitHub アセット URL 契約、npm パッケージレイアウト (files glob、license、README、self-host/CDN CSS root 配置) |
 | `test_webfont_build.py` | 42 | 範囲マージ / 重複除去、5 桁 hex 含む unicode-range、JIS 区マッピング、サブセット計画の配置 / 非重複 / 完全カバレッジ、ストラテジーパーサーのエッジケース |
 

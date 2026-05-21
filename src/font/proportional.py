@@ -41,6 +41,7 @@ PROP_FEATURES = {"palt", "vpal", "halt", "vhal"}
 
 SS09_FEATURE_TAG = "ss09"
 SS09_ALTERNATE_SUFFIX = ".ss09"
+VERTICAL_CENTERING_ALTERNATE_SUFFIX = ".vcenter"
 SS09_UI_NAMES = {
     "en": "Half-width punctuation",
     "ja": "約物半角",
@@ -509,6 +510,29 @@ def _install_ss09_punctuation_feature(
     _install_single_subst_feature(font, SS09_FEATURE_TAG, alternates)
 
 
+def _install_vertical_centering_feature(
+    font: TTFont,
+    glyph_names: set[str],
+    target_advance_width: int,
+) -> None:
+    """Install vertical-only alternates centered on a CJK column width.
+
+    Browsers and Adobe apps position upright Latin in vertical text from the
+    glyph's horizontal advance. Inter's proportional advances therefore land
+    on different column centers from CJK glyphs. These alternates keep the
+    horizontal glyphs unchanged and only affect vertical shaping through
+    ``vert`` / ``vrt2``.
+    """
+    alternates = _create_vertical_centering_alternates(
+        font,
+        glyph_names,
+        target_advance_width,
+    )
+    if not alternates:
+        return
+    _append_single_subst_lookup_to_features(font, ("vert", "vrt2"), alternates)
+
+
 def _create_metric_alternates(
     font: TTFont,
     adjustments: dict[str, tuple[int, int]],
@@ -548,6 +572,68 @@ def _create_metric_alternates(
             advance_width + x_advance,
             lsb + x_placement,
         )
+        if vmtx is not None and glyph_name in vmtx.metrics:
+            vmtx.metrics[alternate_name] = vmtx.metrics[glyph_name]
+        alternates[glyph_name] = alternate_name
+
+    if alternates:
+        font.setGlyphOrder(glyph_order)
+        if "maxp" in font:
+            font["maxp"].numGlyphs = len(glyph_order)
+    return alternates
+
+
+def _create_vertical_centering_alternates(
+    font: TTFont,
+    glyph_names: set[str],
+    target_advance_width: int,
+) -> dict[str, str]:
+    """Create vertical-only glyphs whose hmtx centers on ``target_advance_width``."""
+    if (
+        not glyph_names
+        or target_advance_width <= 0
+        or "glyf" not in font
+        or "hmtx" not in font
+    ):
+        return {}
+
+    glyph_order = list(font.getGlyphOrder())
+    glyph_order_set = set(glyph_order)
+    glyph_order_index = {
+        glyph_name: index
+        for index, glyph_name in enumerate(glyph_order)
+    }
+    glyf = font["glyf"]
+    hmtx = font["hmtx"]
+    vmtx = font["vmtx"] if "vmtx" in font else None
+    alternates: dict[str, str] = {}
+
+    for glyph_name in sorted(
+        glyph_names,
+        key=lambda name: glyph_order_index.get(name, 1_000_000),
+    ):
+        if glyph_name not in glyph_order_set:
+            continue
+        if glyph_name not in glyf or glyph_name not in hmtx.metrics:
+            continue
+
+        alternate_name = f"{glyph_name}{VERTICAL_CENTERING_ALTERNATE_SUFFIX}"
+        if alternate_name not in glyph_order_set:
+            glyph_order.append(alternate_name)
+            glyph_order_set.add(alternate_name)
+
+        advance_width, lsb = hmtx[glyph_name]
+        x_shift = round((target_advance_width - advance_width) / 2)
+        alternate_glyph = copy.deepcopy(glyf[glyph_name])
+        if (
+            x_shift
+            and alternate_glyph.numberOfContours != 0
+            and hasattr(alternate_glyph, "xMin")
+            and alternate_glyph.xMin is not None
+        ):
+            _shift_glyph_x(alternate_glyph, x_shift)
+        glyf[alternate_name] = alternate_glyph
+        hmtx[alternate_name] = (target_advance_width, lsb + x_shift)
         if vmtx is not None and glyph_name in vmtx.metrics:
             vmtx.metrics[alternate_name] = vmtx.metrics[glyph_name]
         alternates[glyph_name] = alternate_name
@@ -676,6 +762,104 @@ def _install_single_subst_feature(
         if script.LangSysRecord:
             for lsr in script.LangSysRecord:
                 _append_feature_index(lsr.LangSys, feature_index)
+    _sort_feature_list_and_remap_langsys(table)
+
+
+def _append_single_subst_lookup_to_features(
+    font: TTFont,
+    feature_tags: tuple[str, ...],
+    substitutions: dict[str, str],
+) -> None:
+    """Append one SingleSubst lookup to existing or new GSUB features."""
+    if not feature_tags or not substitutions:
+        return
+
+    gsub = font.get("GSUB")
+    if gsub is None or gsub.table is None:
+        gsub = newTable("GSUB")
+        font["GSUB"] = gsub
+        gsub.table = otTables.GSUB()
+        gsub.table.Version = 0x00010000
+
+    table = gsub.table
+    if getattr(table, "LookupList", None) is None:
+        table.LookupList = otTables.LookupList()
+        table.LookupList.Lookup = []
+        table.LookupList.LookupCount = 0
+    if getattr(table, "FeatureList", None) is None:
+        table.FeatureList = otTables.FeatureList()
+        table.FeatureList.FeatureRecord = []
+        table.FeatureList.FeatureCount = 0
+    _ensure_script_list(table)
+
+    glyph_order = {glyph_name: i for i, glyph_name in enumerate(font.getGlyphOrder())}
+    glyphs = [
+        glyph_name for glyph_name in substitutions
+        if glyph_name in glyph_order and substitutions[glyph_name] in glyph_order
+    ]
+    glyphs.sort(key=glyph_order.__getitem__)
+    if not glyphs:
+        return
+
+    subtable = otTables.SingleSubst()
+    subtable.mapping = {
+        glyph_name: substitutions[glyph_name]
+        for glyph_name in glyphs
+    }
+
+    lookup = otTables.Lookup()
+    lookup.LookupType = 1
+    lookup.LookupFlag = 0
+    lookup.SubTable = [subtable]
+    lookup.SubTableCount = 1
+
+    lookup_list = table.LookupList
+    lookup_index = lookup_list.LookupCount
+    lookup_list.Lookup.append(lookup)
+    lookup_list.LookupCount += 1
+
+    feature_indices_to_reference = []
+    feature_list = table.FeatureList
+    existing_by_tag: dict[str, list[int]] = {}
+    for index, record in enumerate(feature_list.FeatureRecord):
+        existing_by_tag.setdefault(record.FeatureTag, []).append(index)
+
+    for feature_tag in feature_tags:
+        existing_indices = existing_by_tag.get(feature_tag)
+        if existing_indices:
+            for feature_index in existing_indices:
+                feature = feature_list.FeatureRecord[feature_index].Feature
+                lookups = list(feature.LookupListIndex or [])
+                if lookup_index not in lookups:
+                    lookups.append(lookup_index)
+                feature.LookupListIndex = lookups
+                feature.LookupCount = len(lookups)
+            continue
+
+        feature = otTables.Feature()
+        feature.FeatureParams = None
+        feature.LookupListIndex = [lookup_index]
+        feature.LookupCount = 1
+
+        feature_record = otTables.FeatureRecord()
+        feature_record.FeatureTag = feature_tag
+        feature_record.Feature = feature
+
+        feature_index = feature_list.FeatureCount
+        feature_list.FeatureRecord.append(feature_record)
+        feature_list.FeatureCount += 1
+        feature_indices_to_reference.append(feature_index)
+
+    if feature_indices_to_reference:
+        for script_record in table.ScriptList.ScriptRecord:
+            script = script_record.Script
+            if script.DefaultLangSys:
+                for feature_index in feature_indices_to_reference:
+                    _append_feature_index(script.DefaultLangSys, feature_index)
+            if script.LangSysRecord:
+                for lsr in script.LangSysRecord:
+                    for feature_index in feature_indices_to_reference:
+                        _append_feature_index(lsr.LangSys, feature_index)
     _sort_feature_list_and_remap_langsys(table)
 
 

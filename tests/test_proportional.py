@@ -15,6 +15,7 @@ from fontTools.ttLib.tables import otTables
 from font.proportional import (
     PROP_FEATURES,
     _install_ss09_punctuation_feature,
+    _install_vertical_centering_feature,
     _read_palt,
     _read_vpal,
     _remove_prop_features,
@@ -570,6 +571,72 @@ class TestInstallSS09Punctuation:
             (glyph_order[info.codepoint], pos.x_advance)
             for info, pos in zip(hb_buffer.glyph_infos, hb_buffer.glyph_positions)
         ] == [("uni3001.ss09", 900)]
+
+
+class TestInstallVerticalCentering:
+    """GSUB vert/vrt2 construction for vertical Latin column centering."""
+
+    def test_installs_centered_vertical_alternate(self, synthetic_ttf):
+        before_order = list(synthetic_ttf.getGlyphOrder())
+
+        _install_vertical_centering_feature(synthetic_ttf, {"A"}, 1000)
+
+        assert synthetic_ttf.getGlyphOrder() == before_order + ["A.vcenter"]
+        assert synthetic_ttf["hmtx"].metrics["A.vcenter"] == (1000, 300)
+        assert synthetic_ttf["glyf"]["A.vcenter"].xMin == 300
+        assert synthetic_ttf["glyf"]["A.vcenter"].xMax == 700
+
+        _feature_record(synthetic_ttf, "GSUB", "vert")
+        _feature_record(synthetic_ttf, "GSUB", "vrt2")
+        gsub = synthetic_ttf["GSUB"].table
+        mappings = {}
+        for lookup in gsub.LookupList.Lookup:
+            if lookup.LookupType == 1:
+                for subtable in lookup.SubTable:
+                    mappings.update(getattr(subtable, "mapping", {}))
+        assert mappings["A"] == "A.vcenter"
+
+    def test_appends_to_existing_vert_feature(self, synthetic_ttf):
+        _install_synthetic_gsub_single_subst_feature(
+            synthetic_ttf,
+            "vert",
+            {"uni3001": "uni3001"},
+        )
+
+        _install_vertical_centering_feature(synthetic_ttf, {"A"}, 1000)
+
+        gsub = synthetic_ttf["GSUB"].table
+        tags = [
+            record.FeatureTag
+            for record in gsub.FeatureList.FeatureRecord
+        ]
+        assert tags == ["vert", "vrt2"]
+
+        vert_index, vert_record = _feature_record(synthetic_ttf, "GSUB", "vert")
+        assert len(vert_record.Feature.LookupListIndex) == 2
+        for script_record in gsub.ScriptList.ScriptRecord:
+            assert vert_index in script_record.Script.DefaultLangSys.FeatureIndex
+
+    def test_harfbuzz_uses_centered_alternate_in_vertical_text(self, synthetic_ttf):
+        hb = pytest.importorskip("uharfbuzz")
+        _install_vertical_centering_feature(synthetic_ttf, {"A"}, 1000)
+
+        buffer = io.BytesIO()
+        synthetic_ttf.save(buffer)
+        font_data = buffer.getvalue()
+        glyph_order = synthetic_ttf.getGlyphOrder()
+
+        hb_buffer = hb.Buffer()
+        hb_buffer.add_str("A")
+        hb_buffer.direction = "ttb"
+        hb_buffer.script = "hani"
+        hb_buffer.language = "ja"
+        hb.shape(hb.Font(hb.Face(font_data)), hb_buffer, {"vert": 1, "vrt2": 1})
+
+        assert [
+            (glyph_order[info.codepoint], pos.x_offset)
+            for info, pos in zip(hb_buffer.glyph_infos, hb_buffer.glyph_positions)
+        ] == [("A.vcenter", -500)]
 
 
 # ---------------------------------------------------------------------------
