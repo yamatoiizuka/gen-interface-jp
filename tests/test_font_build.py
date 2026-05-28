@@ -22,15 +22,19 @@ from font.build import (
     _EXTREME_YMIN,
     _VERTICAL_REPEAT_MARK_CODEPOINTS,
     _feature_adjustments_for_codepoints,
+    _final_ttf_path,
     _final_output_metadata,
     _get_cjk_glyphs,
     _get_vert_alternates,
     _get_baseline_palt,
     _glyphs_for_codepoints,
     _glyph_codepoint,
+    _intermediate_paths,
     _is_cjk_codepoint,
     _is_kana_letter,
     _is_kana_or_punct,
+    _parallel_task_command,
+    _parse_args,
     _project_version,
     _retarget_feature_adjustments,
     _retarget_named_adjustments,
@@ -40,6 +44,7 @@ from font.build import (
     _scale_feature_adjustments,
     _scale_design_unit,
     _scale_glyph_spacing,
+    _select_build_matrix,
     _split_cmap_codepoint_glyph,
     _strip_extreme_glyphs,
     _build_inter_variable_instance,
@@ -107,6 +112,61 @@ def _layout_feature_tags(font: TTFont, table_tag: str) -> set[str]:
     if feature_list is None:
         return set()
     return {record.FeatureTag for record in feature_list.FeatureRecord}
+
+
+# ---------------------------------------------------------------------------
+# CLI build selection
+# ---------------------------------------------------------------------------
+
+class TestBuildCli:
+    """The CLI keeps legacy positional selection while adding parallel jobs."""
+
+    def test_parse_jobs_with_family_and_weight(self):
+        args = _parse_args(["--jobs", "4", "normal", "Regular"])
+
+        assert args.jobs == 4
+        assert args.selection == ["normal", "Regular"]
+
+    def test_selects_family_and_named_weight(self):
+        families, weights = _select_build_matrix(["display", "Bold"])
+
+        assert families == ["display"]
+        assert weights == [(700, "Bold", 800)]
+
+    def test_selects_weight_class_across_all_families(self):
+        families, weights = _select_build_matrix(["all", "400", "700"])
+
+        assert families == ["normal", "display"]
+        assert weights == [(400, "Regular", 465), (700, "Bold", 800)]
+
+    def test_rejects_zero_jobs(self):
+        with pytest.raises(SystemExit):
+            _parse_args(["--jobs", "0"])
+
+    def test_parallel_intermediates_are_family_scoped(self):
+        normal_inst, normal_prop = _intermediate_paths(FAMILIES["normal"], "Bold")
+        display_inst, display_prop = _intermediate_paths(FAMILIES["display"], "Bold")
+
+        assert normal_inst != display_inst
+        assert normal_prop != display_prop
+        assert "GenInterfaceJP-Bold" in normal_inst
+        assert "GenInterfaceJPDisplay-Bold" in display_inst
+
+    def test_parallel_subprocess_forces_serial_child_build(self):
+        command = _parallel_task_command(("normal", 400, "Regular", 465, 1, 16))
+
+        assert command[1:5] == ["-m", "font.build", "--jobs", "1"]
+        assert command[-2:] == ["normal", "Regular"]
+
+    def test_final_ttf_path_is_family_scoped(self):
+        normal_path = _final_ttf_path(FAMILIES["normal"], "Regular")
+        display_path = _final_ttf_path(FAMILIES["display"], "Regular")
+
+        assert normal_path != display_path
+        assert normal_path.endswith("Gen Interface JP/GenInterfaceJP-Regular.ttf")
+        assert display_path.endswith(
+            "Gen Interface JP Display/GenInterfaceJPDisplay-Regular.ttf"
+        )
 
 
 # ---------------------------------------------------------------------------

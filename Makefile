@@ -6,6 +6,7 @@ PYTHONPATH := src
 PY := PYTHONPATH=$(PYTHONPATH) $(PYTHON)
 
 WEBFONT_JOBS ?= 8
+FONT_JOBS ?= 16
 NPM_PACKAGE_DIR := dist/release/npm
 NPM_PUBLISH_FLAGS ?= --access public
 NPM_CACHE ?= $(CURDIR)/.npm-cache
@@ -27,10 +28,10 @@ all: release
 # Outputs land under dist/ttf/<Family>/. Web delivery goes through
 # `make webfont` (subset WOFF2 served via unicode-range), not full WOFF2.
 font:
-	$(PY) -m font.build
+	$(PY) -m font.build --jobs $(FONT_JOBS)
 
 verify-edge-instances:
-	$(PY) -m font.build all Thin ExtraBold
+	$(PY) -m font.build --jobs $(FONT_JOBS) all Thin ExtraBold
 	$(PY) -m font.verify_edge_instances
 
 

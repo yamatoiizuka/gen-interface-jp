@@ -22,11 +22,14 @@ TTF outputs — see src/webfont/.
 
 from __future__ import annotations
 
+import argparse
 import copy
 from contextlib import contextmanager
 import logging
 import os
+import subprocess
 import sys
+import time
 
 from fontTools.ttLib import TTFont
 from fontTools.ttLib.reorderGlyphs import reorderGlyphs
@@ -1172,6 +1175,21 @@ def _normalize_layout_coverage_order(font_path: str) -> None:
 # Pipeline
 # ---------------------------------------------------------------------------
 
+def _intermediate_paths(family: dict, weight_name: str) -> tuple[str, str]:
+    """Return family-scoped intermediates so parallel builds never collide."""
+    prefix = family["folderPrefix"]
+    return (
+        os.path.join(INTERMEDIATE, f"{prefix}-{weight_name}-NotoSansJP-Inst.ttf"),
+        os.path.join(INTERMEDIATE, f"{prefix}-{weight_name}-NotoSansJP-Prop.ttf"),
+    )
+
+
+def _final_ttf_path(family: dict, weight_name: str) -> str:
+    family_name = family["familyName"]
+    file_name = f"{family['folderPrefix']}-{weight_name}"
+    return os.path.join(DIST_TTF, family_name, f"{file_name}.ttf")
+
+
 def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -> dict:
     """Build a single weight of a Gen Interface JP family.
 
@@ -1180,8 +1198,8 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
     1. **Bake** Noto variable → static TTF at the chosen wght axis location,
        passed through font-baker with ``metadataMode: inheritBase`` and
        ``output.upm = 2048`` so the Noto identity records survive into the inst.
-    2. **Proportionalise** the inst — read palt/vpal from that 2048-UPM
-       baked output, bake those adjustments
+    2. **Proportionalise** the inst — read baseline palt from Noto Variable,
+       read vpal from the 2048-UPM baked output, bake those adjustments
        into hmtx except selected ss09 yakumono, apply tracking,
        apply per-glyph sidebearing tweaks from ``family["glyphSpacing"]``,
        strip extreme bbox glyphs, optionally apply x-scale.
@@ -1201,8 +1219,7 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
     if not os.path.isfile(inter_path):
         raise FileNotFoundError(f"Inter font not found: {inter_path}")
 
-    inst_path = os.path.join(INTERMEDIATE, f"NotoSansJP-{weight_name}-Inst.ttf")
-    prop_path = os.path.join(INTERMEDIATE, f"NotoSansJP-{weight_name}-Prop.ttf")
+    inst_path, prop_path = _intermediate_paths(family, weight_name)
 
     # ── Step 1: Bake Noto variable → static (font-baker, base-only) ──
     # `metadataMode: inheritBase` keeps Noto's name/OS2 records intact so
@@ -1326,9 +1343,7 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
 
     # ── Step 3: Merge Inter + proportional Noto ──
     family_name = family["familyName"]
-    file_name = f"{family['folderPrefix']}-{weight_name}"
-    ttf_dir = os.path.join(DIST_TTF, family_name)
-    final_path = os.path.join(ttf_dir, f"{file_name}.ttf")
+    final_path = _final_ttf_path(family, weight_name)
     print(f"    [3/3] Merging {family['interPrefix']} + proportional Noto...")
     baseline_offset = _scale_design_unit(BASELINE_OFFSET, TARGET_UPM)
     merge_config = {
@@ -1377,12 +1392,195 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
 # CLI entrypoint
 # ---------------------------------------------------------------------------
 
+def _parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="python -m font.build",
+        description="Build Gen Interface JP TTFs.",
+    )
+    parser.add_argument(
+        "selection",
+        nargs="*",
+        help=(
+            "Optional family key followed by weight filters. Examples: "
+            "normal Regular Bold, all 400 700"
+        ),
+    )
+    parser.add_argument(
+        "-j",
+        "--jobs",
+        type=int,
+        default=int(os.environ.get("FONT_BUILD_JOBS", "1")),
+        help="Number of parallel family/weight jobs. Use 16 for the full TTF matrix.",
+    )
+    args = parser.parse_args(argv)
+    if args.jobs < 1:
+        parser.error("--jobs must be 1 or greater")
+    return args
+
+
+def _select_build_matrix(selection: list[str]) -> tuple[list[str], list[tuple[int, str, int]]]:
+    families_to_build = list(FAMILIES.keys())
+    weights_to_build = WEIGHTS
+
+    args = list(selection)
+    if args:
+        first = args[0].lower()
+        if first in FAMILIES or first == "all":
+            if first != "all":
+                families_to_build = [first]
+            args = args[1:]
+
+        if args:
+            requested = {s.strip() for s in args}
+            weights_to_build = [
+                (n, name, nw) for n, name, nw in WEIGHTS
+                if name in requested or str(n) in requested
+            ]
+            if not weights_to_build:
+                raise ValueError(
+                    f"No matching weights. Available: {[n for _, n, _ in WEIGHTS]}"
+                )
+
+    return families_to_build, weights_to_build
+
+
+def _build_task(task: tuple[str, int, str, int, int, int]) -> dict:
+    family_key, weight_num, weight_name, noto_wght, index, total = task
+    family = FAMILIES[family_key]
+    family_name = family["familyName"]
+    print(f"\n[{index}/{total}] {family_name} {weight_name} ({weight_num})...")
+    manifest = build_one(family, weight_num, weight_name, noto_wght)
+    return {
+        **manifest,
+        "familyKey": family_key,
+        "familyName": family_name,
+        "weightNum": weight_num,
+        "weightName": weight_name,
+        "index": index,
+        "total": total,
+    }
+
+
+def _task_manifest(task: tuple[str, int, str, int, int, int]) -> dict:
+    family_key, weight_num, weight_name, _noto_wght, index, total = task
+    family = FAMILIES[family_key]
+    return {
+        "fontPath": _final_ttf_path(family, weight_name),
+        "familyKey": family_key,
+        "familyName": family["familyName"],
+        "weightNum": weight_num,
+        "weightName": weight_name,
+        "index": index,
+        "total": total,
+    }
+
+
+def _child_pythonpath() -> str:
+    src_path = os.path.join(ROOT, "src")
+    existing = os.environ.get("PYTHONPATH")
+    if existing:
+        paths = existing.split(os.pathsep)
+        if src_path in paths:
+            return existing
+        return os.pathsep.join([src_path, existing])
+    return src_path
+
+
+def _parallel_task_command(task: tuple[str, int, str, int, int, int]) -> list[str]:
+    family_key, _weight_num, weight_name, _noto_wght, _index, _total = task
+    return [
+        sys.executable,
+        "-m",
+        "font.build",
+        "--jobs",
+        "1",
+        family_key,
+        weight_name,
+    ]
+
+
+def _run_parallel_build_tasks(
+    tasks: list[tuple[str, int, str, int, int, int]],
+    jobs: int,
+) -> list[dict]:
+    worker_count = min(jobs, len(tasks))
+    print(
+        f"\nRunning {len(tasks)} TTF build job(s) with {worker_count} worker(s).",
+        flush=True,
+    )
+
+    env = os.environ.copy()
+    env["PYTHONPATH"] = _child_pythonpath()
+    pending = list(tasks)
+    active: list[tuple[tuple[str, int, str, int, int, int], subprocess.Popen]] = []
+    results: list[dict] = []
+
+    try:
+        while pending or active:
+            while pending and len(active) < worker_count:
+                task = pending.pop(0)
+                manifest = _task_manifest(task)
+                print(
+                    f"  -> starting [{manifest['index']}/{manifest['total']}] "
+                    f"{manifest['familyName']} {manifest['weightName']}",
+                    flush=True,
+                )
+                process = subprocess.Popen(
+                    _parallel_task_command(task),
+                    cwd=ROOT,
+                    env=env,
+                )
+                active.append((task, process))
+
+            for task, process in list(active):
+                returncode = process.poll()
+                if returncode is None:
+                    continue
+
+                active.remove((task, process))
+                command = _parallel_task_command(task)
+                if returncode != 0:
+                    for _active_task, active_process in active:
+                        active_process.terminate()
+                    for _active_task, active_process in active:
+                        active_process.wait()
+                    raise subprocess.CalledProcessError(returncode, command)
+
+                manifest = _task_manifest(task)
+                results.append(manifest)
+                print(
+                    f"  -> done [{manifest['index']}/{manifest['total']}] "
+                    f"{manifest['fontPath']}",
+                    flush=True,
+                )
+
+            if pending or active:
+                time.sleep(0.5)
+    except KeyboardInterrupt:
+        for _task, process in active:
+            process.terminate()
+        raise
+
+    return sorted(results, key=lambda manifest: manifest["index"])
+
+
+def _run_build_tasks(
+    tasks: list[tuple[str, int, str, int, int, int]],
+    jobs: int,
+) -> list[dict]:
+    if jobs == 1 or len(tasks) <= 1:
+        return [_build_task(task) for task in tasks]
+
+    return _run_parallel_build_tasks(tasks, jobs)
+
+
 def main():
     """Drive the family/weight matrix from argv.
 
     Usage::
 
         python -m font.build                       # everything
+        python -m font.build --jobs 16             # everything in parallel
         python -m font.build normal                # all weights of one family
         python -m font.build normal Regular Bold   # a slice
         python -m font.build all 400 700           # by weight, both families
@@ -1393,46 +1591,36 @@ def main():
     either by name (``Regular``) or by usWeightClass (``400``).
     """
     os.makedirs(DIST_TTF, exist_ok=True)
+    cli_args = _parse_args(sys.argv[1:])
+    try:
+        families_to_build, weights_to_build = _select_build_matrix(cli_args.selection)
+    except ValueError as exc:
+        print(exc)
+        sys.exit(1)
 
-    # Parse arguments: [family] [weight ...]
-    # family: normal, display, all (default: all)
-    args = sys.argv[1:]
-
-    families_to_build = list(FAMILIES.keys())
-    weights_to_build = WEIGHTS
-
-    if args:
-        # First arg might be a family name
-        first = args[0].lower()
-        if first in FAMILIES or first == "all":
-            if first != "all":
-                families_to_build = [first]
-            args = args[1:]
-
-        # Remaining args are weight filters
-        if args:
-            requested = {s.strip() for s in args}
-            weights_to_build = [
-                (n, name, nw) for n, name, nw in WEIGHTS
-                if name in requested or str(n) in requested
-            ]
-            if not weights_to_build:
-                print(f"No matching weights. Available: {[n for _, n, _ in WEIGHTS]}")
-                sys.exit(1)
+    tasks: list[tuple[str, int, str, int, int, int]] = []
+    total_tasks = len(families_to_build) * len(weights_to_build)
+    index = 1
+    for family_key in families_to_build:
+        for weight_num, weight_name, noto_wght in weights_to_build:
+            tasks.append((family_key, weight_num, weight_name, noto_wght, index, total_tasks))
+            index += 1
 
     for family_key in families_to_build:
         family = FAMILIES[family_key]
         family_name = family["familyName"]
-        total = len(weights_to_build)
         print(f"\n{'='*60}")
         print(f"  {family_name}  (tracking +{family['tracking']})")
         print(f"{'='*60}")
 
-        for i, (weight_num, weight_name, noto_wght) in enumerate(weights_to_build, 1):
-            print(f"\n[{i}/{total}] {family_name} {weight_name} ({weight_num})...")
-            manifest = build_one(family, weight_num, weight_name, noto_wght)
+    manifests = _run_build_tasks(tasks, cli_args.jobs)
+    if cli_args.jobs == 1:
+        for manifest in manifests:
             print(f"  -> {manifest['fontPath']}")
 
+    for family_key in families_to_build:
+        total = sum(1 for manifest in manifests if manifest["familyKey"] == family_key)
+        family_name = FAMILIES[family_key]["familyName"]
         print(f"\n  Done. {total} weight(s) of {family_name}")
 
     print(f"\nAll done. Output in {DIST_TTF}")

@@ -108,6 +108,11 @@ FAMILIES × WEIGHTS の各組合せに対して:
     約物挙動が残るよう、final cmap / glyph 名に対して yakumono-only ss09 を生成
 ```
 
+`font.build --jobs N` は family/weight ごとに独立した job を並列実行する。
+Makefile は `FONT_JOBS ?= 16` を使うため、`make font` はデフォルトで
+2 ファミリー × 8 ウェイトの TTF matrix を並列ビルドする。parallel job 同士が
+同じ path を共有しないよう、Noto intermediate は family と weight ごとに分ける。
+
 ### 2. Web 用サブセット化 (`webfont.build`)
 
 ```
@@ -459,7 +464,8 @@ PYTHONPATH=src python3 -m pytest        # 全テスト (~35 秒)
   が必要なテスト用に Noto Variable のサブセットをセッション単位でキャッシュ;
   全グリフ走査が必要な mutation テスト用には `FontBuilder` で組み立てた
   最小 TrueType (Noto 17000 グリフを毎回触るのは無駄)。
-- **`tests/test_font_build.py`** — UPM 設計値換算、project-version metadata
+- **`tests/test_font_build.py`** — CLI build selection / parallel intermediate
+  path separation、UPM 設計値換算、project-version metadata
   forwarding
   (`SOURCE_UPM = 1000`, `TARGET_UPM = 2048`)、`_glyph_codepoint`, `_is_kana_or_punct`,
   `_is_cjk_codepoint`, `_is_kana_letter`, `_get_cjk_glyphs`,
@@ -491,7 +497,7 @@ PYTHONPATH=src python3 -m pytest        # 全テスト (~35 秒)
 
 | ファイル | テスト数 | 検証内容 |
 |---|---|---|
-| `test_font_build.py` | 103 | UPM 換算ポリシー、project-version metadata forwarding、グリフ名パース、kana / CJK 分類、GSUB/GPOS 走査、baseline palt 方針、x-scale、bbox 除去、tracking、ss09 feature の retarget、final runtime feature scaling、InterVariable edge instance 互換性 |
+| `test_font_build.py` | 110 | CLI build selection / parallel intermediate path separation、UPM 換算ポリシー、project-version metadata forwarding、グリフ名パース、kana / CJK 分類、GSUB/GPOS 走査、baseline palt 方針、x-scale、bbox 除去、tracking、ss09 feature の retarget、final runtime feature scaling、InterVariable edge instance 互換性 |
 | `test_proportional.py` | 37 | palt/vpal 抽出、SinglePos lookup の加算読み取り、グリフ平行移動、GPOS feature 削除、runtime-palt/vpal helper coverage + base/residual 分割 + optional squeeze helper、ss09 生成 + shaping |
 | `test_release.py` | 2 | GitHub アセット URL 契約、npm パッケージレイアウト (files glob、license、README、self-host/CDN CSS root 配置) |
 | `test_webfont_build.py` | 42 | 範囲マージ / 重複除去、5 桁 hex 含む unicode-range、JIS 区マッピング、サブセット計画の配置 / 非重複 / 完全カバレッジ、ストラテジーパーサーのエッジケース |
@@ -500,7 +506,7 @@ PYTHONPATH=src python3 -m pytest        # 全テスト (~35 秒)
 
 | コマンド | 用途 |
 |---|---|
-| `make font` | 全ファミリー × 全ウェイトの TTF を生成 |
+| `make font` | `FONT_JOBS ?= 16` で全ファミリー × 全ウェイトの TTF を生成 |
 | `make verify-edge-instances` | Thin / ExtraBold をビルドし、InterVariable edge instance と final TTF metadata を検証 |
 | `make webfont` | unicode-range サブセットを生成 (`font` 依存) |
 | `make release` | GitHub zip + npm + Pages パッケージ生成 (`webfont` 依存) |
@@ -510,7 +516,7 @@ PYTHONPATH=src python3 -m pytest        # 全テスト (~35 秒)
 | `make site` | デモサイトのビルド (`site/dist/` がそのまま GitHub Pages artifact) |
 | `make serve` | サイトのローカル Vite 開発サーバー |
 | `make clean` | `dist/` と `site/dist/` を削除 |
-| `python3 -m font.build [family] [weight ...]` | 部分ビルド (例: `normal Regular`) |
+| `python3 -m font.build --jobs 16 [family] [weight ...]` | 全 matrix または部分ビルドを並列実行 (例: `normal Regular`) |
 | `python3 -m font.verify_edge_instances` | ビルド済み Thin / ExtraBold edge output を検証 |
 | `python3 -m pytest` | テスト実行 |
 

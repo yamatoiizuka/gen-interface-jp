@@ -109,6 +109,11 @@ For each (family, weight) in FAMILIES × WEIGHTS:
     horizontal and vertical glyphs
 ```
 
+`font.build --jobs N` dispatches independent family/weight jobs in parallel.
+The Makefile uses `FONT_JOBS ?= 16`, so `make font` builds the full
+2-family × 8-weight TTF matrix concurrently by default. Intermediate Noto
+files are scoped by family and weight to keep parallel jobs from sharing paths.
+
 ### 2. Subset for the Web (`webfont.build`)
 
 ```
@@ -474,7 +479,8 @@ Tests live under `tests/`, split by surface:
   Noto Variable for tests that need real palt / vpal / vert / cmap data, and a
   hand-built minimal TrueType (`FontBuilder`) for whole-font mutation
   tests where 17 000 Noto glyphs would be wasteful.
-- **`tests/test_font_build.py`** — UPM design-unit scaling, project-version
+- **`tests/test_font_build.py`** — CLI build selection / parallel intermediate
+  path separation, UPM design-unit scaling, project-version
   metadata forwarding
   (`SOURCE_UPM = 1000`, `TARGET_UPM = 2048`), `_glyph_codepoint`, `_is_kana_or_punct`,
   `_is_cjk_codepoint`, `_is_kana_letter`, `_get_cjk_glyphs`,
@@ -506,7 +512,7 @@ Tests live under `tests/`, split by surface:
 
 | File | Tests | Verifies |
 |---|---|---|
-| `test_font_build.py` | 103 | UPM scaling policy, project-version metadata forwarding, glyph-name parsing, kana / CJK classification, GSUB/GPOS walk, baseline palt policy, x-scale, bbox strip, tracking, ss09 feature retargeting, final runtime feature scaling, InterVariable edge-instance compatibility |
+| `test_font_build.py` | 110 | CLI build selection and parallel intermediate path separation, UPM scaling policy, project-version metadata forwarding, glyph-name parsing, kana / CJK classification, GSUB/GPOS walk, baseline palt policy, x-scale, bbox strip, tracking, ss09 feature retargeting, final runtime feature scaling, InterVariable edge-instance compatibility |
 | `test_proportional.py` | 37 | palt/vpal extraction, cumulative SinglePos lookup reading, glyph translation, GPOS feature removal, runtime-palt/vpal helper coverage + base/residual split + optional squeeze helper, ss09 construction + shaping |
 | `test_release.py` | 2 | GitHub asset URL contract, npm package layout (files glob, license, README, self-host/CDN CSS entrypoints at root) |
 | `test_webfont_build.py` | 42 | Range merge / dedup, unicode-range formatting incl. 5-digit, JIS row mapping, subset plan placement / non-overlap / coverage, strategy parser edge cases |
@@ -515,7 +521,7 @@ Tests live under `tests/`, split by surface:
 
 | Command | Purpose |
 |---|---|
-| `make font` | Build TTF for both families × all weights |
+| `make font` | Build TTF for both families × all weights with `FONT_JOBS ?= 16` |
 | `make verify-edge-instances` | Build Thin / ExtraBold and verify InterVariable edge instance + final TTF metadata |
 | `make webfont` | Build unicode-range subsets (depends on `font`) |
 | `make release` | Build GitHub zips + npm + Pages package (depends on `webfont`) |
@@ -525,7 +531,7 @@ Tests live under `tests/`, split by surface:
 | `make site` | Build the demo site (`site/dist/` doubles as the GitHub Pages artifact) |
 | `make serve` | Local Vite dev server for the site |
 | `make clean` | Remove `dist/` and `site/dist/` |
-| `python3 -m font.build [family] [weight ...]` | Build a slice (e.g. `normal Regular`) |
+| `python3 -m font.build --jobs 16 [family] [weight ...]` | Build the full matrix or a slice in parallel (e.g. `normal Regular`) |
 | `python3 -m font.verify_edge_instances` | Verify built Thin / ExtraBold edge outputs |
 | `python3 -m pytest` | Run the test suite |
 
