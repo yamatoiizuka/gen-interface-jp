@@ -259,7 +259,12 @@ def _read_single_pos_feature(
     placement_attr: str,
     advance_attr: str,
 ) -> dict[str, tuple[int, int]]:
-    """Read a SinglePos feature as ``{glyph_name: (placement, advance)}``."""
+    """Read a SinglePos feature as ``{glyph_name: (placement, advance)}``.
+
+    Multiple lookups in the same OpenType feature are applied sequentially by
+    shaping engines, so records covering the same glyph must be summed rather
+    than replaced by the later lookup.
+    """
     gpos = font.get("GPOS")
     if gpos is None or gpos.table is None:
         return {}
@@ -303,7 +308,11 @@ def _read_single_pos_feature(
 
                 placement = getattr(v, placement_attr, 0) or 0
                 advance = getattr(v, advance_attr, 0) or 0
-                adjustments[glyph_name] = (placement, advance)
+                prev_placement, prev_advance = adjustments.get(glyph_name, (0, 0))
+                adjustments[glyph_name] = (
+                    prev_placement + placement,
+                    prev_advance + advance,
+                )
 
     return adjustments
 

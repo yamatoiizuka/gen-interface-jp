@@ -163,7 +163,10 @@ inst に対して 4 つのサブパスを in-place で実行:
 1. **palt のベイク / 約物 ss09** (`proportional.make_proportional`) — palt 値は
    font-baker が作った freshly baked inst TTF から読む。Stage 1 は
    `output.upm = 2048` で実行済みなので、GPOS ValueRecord はすでに active
-   build grid 上にあり、このプロジェクト側では再スケールしない。
+   build grid 上にあり、このプロジェクト側では再スケールしない。同じ glyph に
+   複数の SinglePos lookup が掛かる場合 (Noto の weight-dependent
+   FeatureVariations 適用後など) は、lookup 順に placement / advance delta を
+   加算して読む。
    XPlacement / XAdvance を LSB / advance に加算しアウトラインをシフト。
    Noto の palt エントリは
    原則として全量で焼き込むが、`PALT_FEATURE_CHARS` の約物は分割する。
@@ -489,7 +492,7 @@ PYTHONPATH=src python3 -m pytest        # 全テスト (~35 秒)
 | ファイル | テスト数 | 検証内容 |
 |---|---|---|
 | `test_font_build.py` | 102 | UPM 換算ポリシー、project-version metadata forwarding、グリフ名パース、kana / CJK 分類、GSUB/GPOS 走査、x-scale、bbox 除去、tracking、ss09 feature の retarget、final runtime feature scaling、InterVariable edge instance 互換性 |
-| `test_proportional.py` | 36 | palt/vpal 抽出、グリフ平行移動、GPOS feature 削除、runtime-palt/vpal helper coverage + base/residual 分割 + optional squeeze helper、ss09 生成 + shaping |
+| `test_proportional.py` | 37 | palt/vpal 抽出、SinglePos lookup の加算読み取り、グリフ平行移動、GPOS feature 削除、runtime-palt/vpal helper coverage + base/residual 分割 + optional squeeze helper、ss09 生成 + shaping |
 | `test_release.py` | 2 | GitHub アセット URL 契約、npm パッケージレイアウト (files glob、license、README、self-host/CDN CSS root 配置) |
 | `test_webfont_build.py` | 42 | 範囲マージ / 重複除去、5 桁 hex 含む unicode-range、JIS 区マッピング、サブセット計画の配置 / 非重複 / 完全カバレッジ、ストラテジーパーサーのエッジケース |
 
