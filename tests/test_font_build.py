@@ -33,6 +33,7 @@ from font.build import (
     _project_version,
     _retarget_feature_adjustments,
     _retarget_named_adjustments,
+    _remove_palt_exclusions,
     _runtime_palt_residual_adjustment,
     _scale_design_adjustment,
     _scale_design_adjustments,
@@ -50,6 +51,7 @@ from font.build import (
     INTER_VARIABLE_EDGE_WEIGHTS,
     NOTO_VARIABLE,
     NORMAL_PALT_SPACE_ADJUSTMENTS,
+    PALT_EXCLUDE_CHARS,
     PALT_FEATURE_CHARS,
     PALT_SPACE_ADJUSTMENTS,
     RUNTIME_PALT_BASE_SCALE,
@@ -806,6 +808,23 @@ class TestPaltSymbolPolicy:
         assert "uniFF2D" not in palt  # Ｍ
         assert "uniFF57" not in palt  # ｗ
         assert "uniFF40" not in palt  # ｀
+
+    def test_fullwidth_m_w_stay_on_tracking_only_path(self):
+        assert PALT_EXCLUDE_CHARS == ("Ｍ", "ｗ")
+
+        font = TTFont(NOTO_VARIABLE)
+        try:
+            palt = {
+                "uniFF2D": (-142, -326),
+                "uniFF57": (-151, -302),
+                "uniFF21": (-107, -212),
+            }
+
+            _remove_palt_exclusions(font, palt)
+        finally:
+            font.close()
+
+        assert palt == {"uniFF21": (-107, -212)}
 
     def test_yakumono_uses_ss09_targets_not_spacing(self):
         assert len(PALT_FEATURE_CHARS) == 48

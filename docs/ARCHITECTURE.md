@@ -166,7 +166,10 @@ Four sub-passes, all in-place on the inst:
    on the active build grid and are not scaled again by this project. When
    a feature contains multiple SinglePos lookups for the same glyph (for
    example after Noto's weight-dependent FeatureVariations are applied),
-   their placement / advance deltas are accumulated in lookup order.
+   their placement / advance deltas are accumulated in lookup order. Noto's
+   heavy-weight FeatureVariation adds palt records for fullwidth `Ｍ` and `ｗ`;
+   those two glyphs are explicitly removed from the bake set so they keep the
+   project's tracking-only fullwidth Latin spacing policy.
    XPlacement/XAdvance pairs are added to LSB / advance, outlines shifted.
    Most Noto palt entries are
    baked at full strength, but yakumono listed in `PALT_FEATURE_CHARS`

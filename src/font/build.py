@@ -168,6 +168,11 @@ PALT_FEATURE_CHARS = (
 # remaining palt delta through ss09 alternates.
 RUNTIME_PALT_BASE_SCALE = 0.34
 
+# Noto's weight-dependent palt FeatureVariation adds these two fullwidth Latin
+# glyphs only for heavy weights. In this UI family they should stay on the
+# tracking-only path instead of suddenly tightening in Bold / ExtraBold.
+PALT_EXCLUDE_CHARS = ("Ｍ", "ｗ")
+
 # Vertical yakumono glyphs also live under the ss09 "約物半角" feature. The
 # build uses Noto's vpal records as source data but bakes them into .ss09 vmtx
 # alternates instead of exposing a runtime vpal feature.
@@ -901,6 +906,12 @@ def _feature_adjustments_for_codepoints(
     }
 
 
+def _remove_palt_exclusions(font: TTFont, adjustments: dict[str, tuple[int, int]]) -> None:
+    """Drop project-owned palt exclusions from a mutable adjustment map."""
+    for glyph_name in _glyphs_for_codepoints(font, PALT_EXCLUDE_CHARS):
+        adjustments.pop(glyph_name, None)
+
+
 def _runtime_palt_residual_adjustment(
     adjustment: tuple[int, int],
 ) -> tuple[int, int]:
@@ -1253,6 +1264,7 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
     palt_data = dict(_read_palt(font))
     if split_source in palt_data:
         palt_data["uni30FB"] = palt_data[split_source]
+    _remove_palt_exclusions(font, palt_data)
     vpal_data = dict(_read_vpal(font))
     if split_source in vpal_data:
         vpal_data["uni30FB"] = vpal_data[split_source]

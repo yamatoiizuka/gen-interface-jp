@@ -166,7 +166,9 @@ inst に対して 4 つのサブパスを in-place で実行:
    build grid 上にあり、このプロジェクト側では再スケールしない。同じ glyph に
    複数の SinglePos lookup が掛かる場合 (Noto の weight-dependent
    FeatureVariations 適用後など) は、lookup 順に placement / advance delta を
-   加算して読む。
+   加算して読む。Noto の太ウェイト用 FeatureVariation は全角 `Ｍ` と `ｗ` の
+   palt record を追加するが、この 2 glyph は明示的に bake 対象から外し、
+   project 側の tracking-only な全角 Latin spacing 方針を維持する。
    XPlacement / XAdvance を LSB / advance に加算しアウトラインをシフト。
    Noto の palt エントリは
    原則として全量で焼き込むが、`PALT_FEATURE_CHARS` の約物は分割する。
