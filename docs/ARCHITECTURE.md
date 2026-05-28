@@ -79,8 +79,8 @@ For each (family, weight) in FAMILIES × WEIGHTS:
   → font-baker bake: variable Noto → static TTF
                     inheritBase passes designer/OFL/version
                     through; only weight is stamped
-  → reload inst, read palt/vpal from font-baker's 2048-UPM baked output
-    (records are already on the active build grid)
+  → reload inst, read baseline palt from Noto Variable and scale it to the
+    active 2048-UPM build grid; read vpal from font-baker's baked output
   → bake Noto palt at full strength except ss09 yakumono,
     whose palt is split into a 34% baked base + 66% ss09 residual
     (glyphs without palt keep metrics)
@@ -161,15 +161,12 @@ carry palt records.
 Four sub-passes, all in-place on the inst:
 
 1. **palt baking / yakumono ss09** (`proportional.make_proportional`) — palt values are
-   read from the freshly baked inst TTF produced by font-baker. Because
-   Stage 1 already runs with `output.upm = 2048`, the GPOS ValueRecords are
-   on the active build grid and are not scaled again by this project. When
-   a feature contains multiple SinglePos lookups for the same glyph (for
-   example after Noto's weight-dependent FeatureVariations are applied),
-   their placement / advance deltas are accumulated in lookup order. Noto's
-   heavy-weight FeatureVariation adds palt records for fullwidth `Ｍ` and `ｗ`;
-   those two glyphs are explicitly removed from the bake set so they keep the
-   project's tracking-only fullwidth Latin spacing policy.
+   read from Noto Variable's baseline vendor palt, then scaled from Noto's
+   1000-UPM source grid to the active 2048-UPM build grid. Noto's Thin
+   through SemiBold palt records are identical, but Bold / ExtraBold switch
+   to a heavier FeatureVariation set; Gen Interface JP intentionally keeps
+   the baseline palt coverage and values across every output weight so heavy
+   weights do not abruptly tighten kana / fullwidth Latin.
    XPlacement/XAdvance pairs are added to LSB / advance, outlines shifted.
    Most Noto palt entries are
    baked at full strength, but yakumono listed in `PALT_FEATURE_CHARS`
@@ -509,7 +506,7 @@ Tests live under `tests/`, split by surface:
 
 | File | Tests | Verifies |
 |---|---|---|
-| `test_font_build.py` | 102 | UPM scaling policy, project-version metadata forwarding, glyph-name parsing, kana / CJK classification, GSUB/GPOS walk, x-scale, bbox strip, tracking, ss09 feature retargeting, final runtime feature scaling, InterVariable edge-instance compatibility |
+| `test_font_build.py` | 103 | UPM scaling policy, project-version metadata forwarding, glyph-name parsing, kana / CJK classification, GSUB/GPOS walk, baseline palt policy, x-scale, bbox strip, tracking, ss09 feature retargeting, final runtime feature scaling, InterVariable edge-instance compatibility |
 | `test_proportional.py` | 37 | palt/vpal extraction, cumulative SinglePos lookup reading, glyph translation, GPOS feature removal, runtime-palt/vpal helper coverage + base/residual split + optional squeeze helper, ss09 construction + shaping |
 | `test_release.py` | 2 | GitHub asset URL contract, npm package layout (files glob, license, README, self-host/CDN CSS entrypoints at root) |
 | `test_webfont_build.py` | 42 | Range merge / dedup, unicode-range formatting incl. 5-digit, JIS row mapping, subset plan placement / non-overlap / coverage, strategy parser edge cases |
