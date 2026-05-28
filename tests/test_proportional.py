@@ -108,6 +108,84 @@ def _install_synthetic_pairpos_kern(
     gpos.table.FeatureList.FeatureCount = 1
 
 
+def _install_synthetic_singlepos_feature(
+    font,
+    feature_tag: str,
+    lookup_adjustments: list[dict[str, tuple[int, int]]],
+    placement_attr: str = "XPlacement",
+    advance_attr: str = "XAdvance",
+    value_format: int = 0x0005,
+) -> None:
+    gpos = newTable("GPOS")
+    font["GPOS"] = gpos
+    gpos.table = otTables.GPOS()
+    gpos.table.Version = 0x00010000
+
+    langsys = otTables.LangSys()
+    langsys.LookupOrder = None
+    langsys.ReqFeatureIndex = 0xFFFF
+    langsys.FeatureIndex = [0]
+    langsys.FeatureCount = 1
+
+    script = otTables.Script()
+    script.DefaultLangSys = langsys
+    script.LangSysRecord = []
+    script.LangSysCount = 0
+
+    script_record = otTables.ScriptRecord()
+    script_record.ScriptTag = "DFLT"
+    script_record.Script = script
+
+    gpos.table.ScriptList = otTables.ScriptList()
+    gpos.table.ScriptList.ScriptRecord = [script_record]
+    gpos.table.ScriptList.ScriptCount = 1
+
+    glyph_order = {glyph_name: i for i, glyph_name in enumerate(font.getGlyphOrder())}
+    lookups = []
+    for adjustments in lookup_adjustments:
+        glyphs = sorted(adjustments, key=glyph_order.__getitem__)
+
+        coverage = otTables.Coverage()
+        coverage.glyphs = glyphs
+
+        subtable = otTables.SinglePos()
+        subtable.Format = 2
+        subtable.Coverage = coverage
+        subtable.ValueFormat = value_format
+        subtable.Value = []
+        for glyph_name in glyphs:
+            placement, advance = adjustments[glyph_name]
+            value = otTables.ValueRecord()
+            setattr(value, placement_attr, placement)
+            setattr(value, advance_attr, advance)
+            subtable.Value.append(value)
+        subtable.ValueCount = len(subtable.Value)
+
+        lookup = otTables.Lookup()
+        lookup.LookupType = 1
+        lookup.LookupFlag = 0
+        lookup.SubTable = [subtable]
+        lookup.SubTableCount = 1
+        lookups.append(lookup)
+
+    gpos.table.LookupList = otTables.LookupList()
+    gpos.table.LookupList.Lookup = lookups
+    gpos.table.LookupList.LookupCount = len(lookups)
+
+    feature = otTables.Feature()
+    feature.FeatureParams = None
+    feature.LookupListIndex = list(range(len(lookups)))
+    feature.LookupCount = len(lookups)
+
+    feature_record = otTables.FeatureRecord()
+    feature_record.FeatureTag = feature_tag
+    feature_record.Feature = feature
+
+    gpos.table.FeatureList = otTables.FeatureList()
+    gpos.table.FeatureList.FeatureRecord = [feature_record]
+    gpos.table.FeatureList.FeatureCount = 1
+
+
 def _install_synthetic_gsub_single_subst_feature(
     font,
     feature_tag: str,
@@ -200,6 +278,21 @@ class TestReadPalt:
     def test_empty_when_no_gsub_palt(self, synthetic_ttf):
         # synthetic_ttf has no GPOS at all
         assert _read_palt(synthetic_ttf) == {}
+
+    def test_accumulates_multiple_palt_lookups_for_same_glyph(self, synthetic_ttf):
+        _install_synthetic_singlepos_feature(
+            synthetic_ttf,
+            "palt",
+            [
+                {"uni3042": (-20, -100), "uni3001": (-10, -500)},
+                {"uni3042": (5, 25), "uni3001": (3, 0)},
+            ],
+        )
+
+        assert _read_palt(synthetic_ttf) == {
+            "uni3042": (-15, -75),
+            "uni3001": (-7, -500),
+        }
 
 
 # ---------------------------------------------------------------------------

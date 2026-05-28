@@ -35,6 +35,8 @@ from merge_fonts import merge_fonts, parse_codepoint_list
 from project_metadata import project_version as read_project_version
 from .proportional import (
     _install_ss09_punctuation_feature,
+    _read_palt,
+    _read_vpal,
     _remove_prop_features,
     _scale_position_adjustment,
     make_proportional,
@@ -165,6 +167,11 @@ PALT_FEATURE_CHARS = (
 # not enable the feature. Bake this fraction into hmtx, then expose only the
 # remaining palt delta through ss09 alternates.
 RUNTIME_PALT_BASE_SCALE = 0.34
+
+# Noto's weight-dependent palt FeatureVariation adds these two fullwidth Latin
+# glyphs only for heavy weights. In this UI family they should stay on the
+# tracking-only path instead of suddenly tightening in Bold / ExtraBold.
+PALT_EXCLUDE_CHARS = ("Ｍ", "ｗ")
 
 # Vertical yakumono glyphs also live under the ss09 "約物半角" feature. The
 # build uses Noto's vpal records as source data but bakes them into .ss09 vmtx
@@ -480,48 +487,6 @@ SUB_EXCLUDE_CODEPOINTS = [
 # Latin/CJK pairing where CJK is slightly down-scaled to feel proportionate.
 BASELINE_OFFSET = 25
 SCALE = 0.925
-
-
-# ---------------------------------------------------------------------------
-# Variable-font palt cache
-# ---------------------------------------------------------------------------
-
-_variable_palt_cache: dict | None = None
-_variable_vpal_cache: dict | None = None
-
-
-def _get_variable_palt() -> dict[str, tuple[int, int]]:
-    """Read palt adjustments from the original Noto variable font (cached).
-
-    The variable font's palt values are used as the source of truth across
-    all weights instead of reading palt from each statically-instantiated
-    inst.ttf. Reason: variable-font instantiation can quietly corrupt
-    GPOS ValueRecords at non-default axis positions (some XPlacement /
-    XAdvance pairs end up zeroed or shifted). The variable font itself
-    carries the canonical palt definition, so we read it once and reuse.
-    """
-    global _variable_palt_cache
-    if _variable_palt_cache is None:
-        from .proportional import _read_palt
-
-        font = TTFont(NOTO_VARIABLE)
-        _variable_palt_cache = _read_palt(font)
-    return _variable_palt_cache
-
-
-def _get_variable_vpal() -> dict[str, tuple[int, int]]:
-    """Read vpal adjustments from the original Noto variable font (cached).
-
-    The production build does not expose runtime vpal. These records are only
-    used as source data for vertical ss09 metric alternates.
-    """
-    global _variable_vpal_cache
-    if _variable_vpal_cache is None:
-        from .proportional import _read_vpal
-
-        font = TTFont(NOTO_VARIABLE)
-        _variable_vpal_cache = _read_vpal(font)
-    return _variable_vpal_cache
 
 
 # ---------------------------------------------------------------------------
@@ -941,6 +906,12 @@ def _feature_adjustments_for_codepoints(
     }
 
 
+def _remove_palt_exclusions(font: TTFont, adjustments: dict[str, tuple[int, int]]) -> None:
+    """Drop project-owned palt exclusions from a mutable adjustment map."""
+    for glyph_name in _glyphs_for_codepoints(font, PALT_EXCLUDE_CHARS):
+        adjustments.pop(glyph_name, None)
+
+
 def _runtime_palt_residual_adjustment(
     adjustment: tuple[int, int],
 ) -> tuple[int, int]:
@@ -1203,8 +1174,8 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
     1. **Bake** Noto variable → static TTF at the chosen wght axis location,
        passed through font-baker with ``metadataMode: inheritBase`` and
        ``output.upm = 2048`` so the Noto identity records survive into the inst.
-    2. **Proportionalise** the inst — read palt from the variable cache
-       (variable instantiation can corrupt palt), bake those adjustments
+    2. **Proportionalise** the inst — read palt/vpal from that 2048-UPM
+       baked output, bake those adjustments
        into hmtx except selected ss09 yakumono, apply tracking,
        apply per-glyph sidebearing tweaks from ``family["glyphSpacing"]``,
        strip extreme bbox glyphs, optionally apply x-scale.
@@ -1287,14 +1258,14 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
     split_source = _split_cmap_codepoint_glyph(font, 0x30FB, "uni30FB")
     ss09_punctuation_glyphs = _glyphs_for_codepoints(font, ss09_punctuation_chars)
 
-    # Read palt/vpal from the variable source rather than the freshly-baked inst:
-    # variable instantiation can leave proportional ValueRecords with zeroed
-    # or otherwise stale placement/advance pairs. The cached variable read is
-    # canonical across all weights.
-    palt_data = _scale_design_adjustments(dict(_get_variable_palt()), font_upm)
+    # Read palt/vpal from the freshly baked 2048-UPM inst. font-baker owns the
+    # variable instantiation and UPM conversion here, so proportional records
+    # are already on the active build grid.
+    palt_data = dict(_read_palt(font))
     if split_source in palt_data:
         palt_data["uni30FB"] = palt_data[split_source]
-    vpal_data = _scale_design_adjustments(dict(_get_variable_vpal()), font_upm)
+    _remove_palt_exclusions(font, palt_data)
+    vpal_data = dict(_read_vpal(font))
     if split_source in vpal_data:
         vpal_data["uni30FB"] = vpal_data[split_source]
     synthetic_vertical_adjustments = _scale_design_adjustments(

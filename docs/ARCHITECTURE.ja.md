@@ -79,8 +79,8 @@ FAMILIES × WEIGHTS の各組合せに対して:
   → font-baker bake: variable Noto → static TTF
                     inheritBase で designer/OFL/version を継承
                     weight だけを上書き
-  → inst を再読込し、キャッシュした variable から palt/vpal 取得
-    1000-UPM の record を 2048-UPM のビルドグリッドへ換算
+  → inst を再読込し、font-baker が 2048-UPM で bake した出力から
+    palt/vpal 取得 (record はすでに active build grid 上)
   → ss09 約物を除き Noto の palt エントリを全量で焼き込み
     ss09 約物は 34% を base に焼き、66% を ss09 残差として保持
     (palt なしグリフはメトリクス維持)
@@ -161,18 +161,23 @@ palt record を持ちうるため対象に含める。
 inst に対して 4 つのサブパスを in-place で実行:
 
 1. **palt のベイク / 約物 ss09** (`proportional.make_proportional`) — palt 値は
-   キャッシュ済みの variable から読む (instantiation で非デフォルト軸位置の
-   palt ValueRecord が壊れることがあるため)。その値は Noto の 1000-UPM
-   ソースグリッドから、実際の 2048-UPM ビルドグリッドへ換算する。
+   font-baker が作った freshly baked inst TTF から読む。Stage 1 は
+   `output.upm = 2048` で実行済みなので、GPOS ValueRecord はすでに active
+   build grid 上にあり、このプロジェクト側では再スケールしない。同じ glyph に
+   複数の SinglePos lookup が掛かる場合 (Noto の weight-dependent
+   FeatureVariations 適用後など) は、lookup 順に placement / advance delta を
+   加算して読む。Noto の太ウェイト用 FeatureVariation は全角 `Ｍ` と `ｗ` の
+   palt record を追加するが、この 2 glyph は明示的に bake 対象から外し、
+   project 側の tracking-only な全角 Latin spacing 方針を維持する。
    XPlacement / XAdvance を LSB / advance に加算しアウトラインをシフト。
    Noto の palt エントリは
    原則として全量で焼き込むが、`PALT_FEATURE_CHARS` の約物は分割する。
    palt 調整量の 34% を `hmtx` に焼き込んでデフォルトでもある程度
    詰まる base metrics にし、残り 66% は final の yakumono-only `ss09`
-   stylistic set「約物半角」用に保持する。Noto の典型的な `XAdvance=-500` の約物では、
-   palt-off で `-170` が base advance に焼かれ、`ss09` 有効時に残り
-   `-330` が適用される
-   (いずれも UPM 換算前の設計値)。runtime `vpal` は feature としては
+   stylistic set「約物半角」用に保持する。Noto の典型的な 1000-UPM source
+   scale の `XAdvance=-500` 約物は 2048-UPM では `-1024` 相当になり、
+   palt-off で `-348` が base advance に焼かれ、`ss09` 有効時に残り
+   `-676` が適用される。runtime `vpal` は feature としては
    再生成しないが、選択した約物 record は縦組み用 `.ss09` alternate の
    source data として保持し、`vmtx` に縦方向の placement / advance delta を
    焼き込む。final font では `palt`, `vpal`, `halt`, `vhal` を削除し、
@@ -269,8 +274,8 @@ base metrics に焼き込む。production build では `install_runtime_palt` �
 残差を live `palt` としては公開せず、codepoint 単位で保持して Inter merge 後の
 yakumono-only `ss09` として再生成する。本プロジェクトでは
 `RUNTIME_PALT_BASE_SCALE = 0.34` を使うため、palt-off の約物はすでに部分的に
-詰まり (典型的な `-500` palt advance なら UPM 換算前で `-170`)、`ss09` を
-有効にすると従来の Noto full palt 目標まで到達する。
+詰まり (2048-UPM build grid 上の典型的な `-1024` palt advance なら `-348`)、
+`ss09` を有効にすると従来の Noto full palt 目標まで到達する。
 production build では横方向の `ss09` target に `PALT_FEATURE_CHARS`
 (48 文字)、縦方向の `ss09` target に `SS09_VERTICAL_FEATURE_CHARS` と
 `SS09_VERTICAL_FEATURE_GLYPHS` を使う。後者は Noto の `vpal` 値を
@@ -462,8 +467,8 @@ PYTHONPATH=src python3 -m pytest        # 全テスト (~35 秒)
   `_is_cjk_codepoint`, `_is_kana_letter`, `_get_cjk_glyphs`,
   `_get_vert_alternates`, `_apply_x_scale`, `_strip_extreme_glyphs`,
   `_apply_tracking`, `_apply_glyph_spacing`, `_glyphs_for_codepoints`,
-  `_split_cmap_codepoint_glyph`, `_get_variable_palt`、
-  明示的な palt/ss09 spacing 方針、Thin / ExtraBold 用の
+  `_split_cmap_codepoint_glyph`、明示的な palt/ss09 spacing 方針、
+  vendor palt/vpal policy check、Thin / ExtraBold 用の
   InterVariable edge instance source 選択。
 - **`src/font/verify_edge_instances.py`** — Thin / ExtraBold のビルド後検証。
   生成された InterVariable static instance が vendor static と同じ cmap /
@@ -488,8 +493,8 @@ PYTHONPATH=src python3 -m pytest        # 全テスト (~35 秒)
 
 | ファイル | テスト数 | 検証内容 |
 |---|---|---|
-| `test_font_build.py` | 108 | UPM 換算ポリシー、project-version metadata forwarding、グリフ名パース、kana / CJK 分類、GSUB/GPOS 走査、x-scale、bbox 除去、tracking、ss09 feature の retarget、final runtime feature scaling、InterVariable edge instance 互換性 |
-| `test_proportional.py` | 36 | palt/vpal 抽出、グリフ平行移動、GPOS feature 削除、runtime-palt/vpal helper coverage + base/residual 分割 + optional squeeze helper、ss09 生成 + shaping |
+| `test_font_build.py` | 102 | UPM 換算ポリシー、project-version metadata forwarding、グリフ名パース、kana / CJK 分類、GSUB/GPOS 走査、x-scale、bbox 除去、tracking、ss09 feature の retarget、final runtime feature scaling、InterVariable edge instance 互換性 |
+| `test_proportional.py` | 37 | palt/vpal 抽出、SinglePos lookup の加算読み取り、グリフ平行移動、GPOS feature 削除、runtime-palt/vpal helper coverage + base/residual 分割 + optional squeeze helper、ss09 生成 + shaping |
 | `test_release.py` | 2 | GitHub アセット URL 契約、npm パッケージレイアウト (files glob、license、README、self-host/CDN CSS root 配置) |
 | `test_webfont_build.py` | 42 | 範囲マージ / 重複除去、5 桁 hex 含む unicode-range、JIS 区マッピング、サブセット計画の配置 / 非重複 / 完全カバレッジ、ストラテジーパーサーのエッジケース |
 
@@ -520,7 +525,7 @@ GitHub Pages にデプロイ。リリースパッケージングはローカル�
 
 ### Python
 
-- `ofl-font-baker` (>= 0.4.5) — コンポジットフォントマージエンジン。
+- `ofl-font-baker` (>= 0.4.6) — コンポジットフォントマージエンジン。
   `metadataMode` で base / sub の identity を継承する。Stage 1 (bake) と
   Stage 3 (merge) を駆動。0.4.0 で `subFont.excludeCodepoints` と
   glyph-name collision rename が追加され、merge 段で日本語慣習記号を
@@ -528,7 +533,9 @@ GitHub Pages にデプロイ。リリースパッケージングはローカル�
   グリフに対して縦書き metrics (`vmtx` / `VORG`) と `vert` / `vrt2` GSUB
   マッピングを base から継承するように修正され、上書き対象の縦書き
   位置が崩れない。0.4.5 で `output.upm` が追加され、Noto bake と final merge
-  の両段で 2048 UPM の Inter グリッドを維持するために使っている。
+  の両段で 2048 UPM の Inter グリッドを維持するために使っている。0.4.6 で
+  `output.upm` 適用時の layout table もスケールされるため、この pipeline が
+  読むプロポーショナル / 縦書き位置データも active build grid 上に揃う。
 - `fonttools` (>= 4.47.0) — フォントパース、instancer、subsetter、
   GPOS / GSUB の編集。
 - `freetype-py` — メトリクス検証ツーリングで使用。

@@ -5,6 +5,8 @@ glyph-name codepoint parsing, kana / CJK classification, GSUB feature
 inspection, horizontal scaling, bbox stripping, and tracking.
 """
 
+from __future__ import annotations
+
 import copy
 import re
 from pathlib import Path
@@ -22,8 +24,6 @@ from font.build import (
     _feature_adjustments_for_codepoints,
     _final_output_metadata,
     _get_cjk_glyphs,
-    _get_variable_palt,
-    _get_variable_vpal,
     _get_vert_alternates,
     _glyphs_for_codepoints,
     _glyph_codepoint,
@@ -33,6 +33,7 @@ from font.build import (
     _project_version,
     _retarget_feature_adjustments,
     _retarget_named_adjustments,
+    _remove_palt_exclusions,
     _runtime_palt_residual_adjustment,
     _scale_design_adjustment,
     _scale_design_adjustments,
@@ -48,7 +49,9 @@ from font.build import (
     FAMILIES,
     INTER_VARIABLE,
     INTER_VARIABLE_EDGE_WEIGHTS,
+    NOTO_VARIABLE,
     NORMAL_PALT_SPACE_ADJUSTMENTS,
+    PALT_EXCLUDE_CHARS,
     PALT_FEATURE_CHARS,
     PALT_SPACE_ADJUSTMENTS,
     RUNTIME_PALT_BASE_SCALE,
@@ -61,8 +64,40 @@ from font.build import (
     TARGET_UPM,
     TRACKING_IGNORE_CODEPOINTS,
 )
-from font.proportional import _install_ss09_punctuation_feature
+from font.proportional import (
+    _install_ss09_punctuation_feature,
+    _read_palt,
+    _read_vpal,
+)
 from merge_fonts import parse_codepoint_list
+
+
+_vendor_palt_cache: dict[str, tuple[int, int]] | None = None
+_vendor_vpal_cache: dict[str, tuple[int, int]] | None = None
+
+
+def _vendor_palt() -> dict[str, tuple[int, int]]:
+    """Read full vendor Noto palt data for policy assertions."""
+    global _vendor_palt_cache
+    if _vendor_palt_cache is None:
+        font = TTFont(NOTO_VARIABLE)
+        try:
+            _vendor_palt_cache = _read_palt(font)
+        finally:
+            font.close()
+    return _vendor_palt_cache
+
+
+def _vendor_vpal() -> dict[str, tuple[int, int]]:
+    """Read full vendor Noto vpal data for policy assertions."""
+    global _vendor_vpal_cache
+    if _vendor_vpal_cache is None:
+        font = TTFont(NOTO_VARIABLE)
+        try:
+            _vendor_vpal_cache = _read_vpal(font)
+        finally:
+            font.close()
+    return _vendor_vpal_cache
 
 
 def _layout_feature_tags(font: TTFont, table_tag: str) -> set[str]:
@@ -752,7 +787,7 @@ class TestPaltSymbolPolicy:
     """Full palt is baked by default; selected yakumono keeps an ss09 residual."""
 
     def test_tracking_only_symbols_are_implicit_palt_entries(self):
-        palt = _get_variable_palt()
+        palt = _vendor_palt()
 
         for glyph_name in (
             "uni3012", "uni3005", "uni3006",
@@ -773,6 +808,23 @@ class TestPaltSymbolPolicy:
         assert "uniFF2D" not in palt  # Ｍ
         assert "uniFF57" not in palt  # ｗ
         assert "uniFF40" not in palt  # ｀
+
+    def test_fullwidth_m_w_stay_on_tracking_only_path(self):
+        assert PALT_EXCLUDE_CHARS == ("Ｍ", "ｗ")
+
+        font = TTFont(NOTO_VARIABLE)
+        try:
+            palt = {
+                "uniFF2D": (-142, -326),
+                "uniFF57": (-151, -302),
+                "uniFF21": (-107, -212),
+            }
+
+            _remove_palt_exclusions(font, palt)
+        finally:
+            font.close()
+
+        assert palt == {"uniFF21": (-107, -212)}
 
     def test_yakumono_uses_ss09_targets_not_spacing(self):
         assert len(PALT_FEATURE_CHARS) == 48
@@ -811,7 +863,7 @@ class TestPaltSymbolPolicy:
             assert "runtimeVpal" not in family
 
     def test_vertical_yakumono_uses_ss09_targets_not_runtime_vpal(self):
-        vpal = _get_variable_vpal()
+        vpal = _vendor_vpal()
         assert "glyph17071" in SS09_VERTICAL_FEATURE_GLYPHS
         assert SS09_SYNTHETIC_VERTICAL_ADJUSTMENTS == {
             "uniFF1B": (250, -500),
@@ -1083,56 +1135,3 @@ class TestApplyGlyphSpacing:
         assert after_glyph.xMin == before_glyph.xMin
         assert after_glyph.xMax == before_glyph.xMax
         assert list(after_glyph.coordinates) == list(before_glyph.coordinates)
-
-
-# ---------------------------------------------------------------------------
-# _get_variable_palt
-# ---------------------------------------------------------------------------
-
-class TestGetVariablePalt:
-    """Cached read of palt from the vendor Noto Variable."""
-
-    def test_returns_dict(self):
-        palt = _get_variable_palt()
-        assert isinstance(palt, dict)
-        assert len(palt) > 0
-
-    def test_returns_xplacement_xadvance_tuples(self):
-        palt = _get_variable_palt()
-        for gname, value in list(palt.items())[:5]:
-            assert isinstance(gname, str)
-            assert isinstance(value, tuple)
-            assert len(value) == 2
-            assert all(isinstance(v, int) for v in value)
-
-    def test_cached_returns_same_instance(self):
-        # Two calls return the same cached dict — module-level cache.
-        first = _get_variable_palt()
-        second = _get_variable_palt()
-        assert first is second
-
-
-# ---------------------------------------------------------------------------
-# _get_variable_vpal
-# ---------------------------------------------------------------------------
-
-class TestGetVariableVpal:
-    """Cached vpal source data for vertical ss09 alternates."""
-
-    def test_returns_dict(self):
-        vpal = _get_variable_vpal()
-        assert isinstance(vpal, dict)
-        assert len(vpal) > 0
-
-    def test_returns_yplacement_yadvance_tuples(self):
-        vpal = _get_variable_vpal()
-        for gname, value in list(vpal.items())[:5]:
-            assert isinstance(gname, str)
-            assert isinstance(value, tuple)
-            assert len(value) == 2
-            assert all(isinstance(v, int) for v in value)
-
-    def test_cached_returns_same_instance(self):
-        first = _get_variable_vpal()
-        second = _get_variable_vpal()
-        assert first is second
