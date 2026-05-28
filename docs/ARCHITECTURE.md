@@ -79,8 +79,8 @@ For each (family, weight) in FAMILIES × WEIGHTS:
   → font-baker bake: variable Noto → static TTF
                     inheritBase passes designer/OFL/version
                     through; only weight is stamped
-  → reload inst, read palt/vpal from cached variable font
-    and scale those 1000-UPM records to the active 2048-UPM grid
+  → reload inst, read palt/vpal from font-baker's 2048-UPM baked output
+    (records are already on the active build grid)
   → bake Noto palt at full strength except ss09 yakumono,
     whose palt is split into a 34% baked base + 66% ss09 residual
     (glyphs without palt keep metrics)
@@ -161,18 +161,19 @@ carry palt records.
 Four sub-passes, all in-place on the inst:
 
 1. **palt baking / yakumono ss09** (`proportional.make_proportional`) — palt values are
-   read from the cached variable font (instantiation can corrupt palt's
-   ValueRecords at non-default axis positions), then scaled from Noto's
-   1000-UPM source grid to the active 2048-UPM build grid.
+   read from the freshly baked inst TTF produced by font-baker. Because
+   Stage 1 already runs with `output.upm = 2048`, the GPOS ValueRecords are
+   on the active build grid and are not scaled again by this project.
    XPlacement/XAdvance pairs are added to LSB / advance, outlines shifted.
    Most Noto palt entries are
    baked at full strength, but yakumono listed in `PALT_FEATURE_CHARS`
    is split: 34% of the palt adjustment is baked into `hmtx` so the glyph is
    still tightened by default, and the remaining 66% is held for a final
    yakumono-only `ss09` stylistic set named "約物半角". For Noto's common
-   `XAdvance=-500` yakumono records, that means palt-off gets `-170` baked
-   into the base advance and enabling `ss09` applies the remaining `-330`
-   before UPM scaling. Runtime `vpal` is not reinstalled as a feature; its
+   `XAdvance=-500` yakumono records at the 1000-UPM source scale, the
+   equivalent 2048-UPM record is `-1024`; palt-off gets `-348` baked into
+   the base advance and enabling `ss09` applies the remaining `-676`.
+   Runtime `vpal` is not reinstalled as a feature; its
    selected yakumono records are kept as source data for vertical `.ss09`
    alternates whose `vmtx` carries the vertical placement / advance delta.
    Final fonts strip `palt`, `vpal`, `halt`, and `vhal` so optional yakumono
@@ -279,8 +280,8 @@ is disabled so the residual is not exposed as live `palt`; instead it is
 captured by codepoint and later reinstalled as yakumono-only `ss09` after the
 Inter merge. The project uses
 `RUNTIME_PALT_BASE_SCALE = 0.34`, so palt-off yakumono is already partially
-tightened (`-170` for the common `-500` palt advance before UPM scaling) while
-enabling `ss09` reaches the former full Noto palt target.
+tightened (`-348` for the common `-1024` palt advance on the 2048-UPM build
+grid) while enabling `ss09` reaches the former full Noto palt target.
 The production build uses `PALT_FEATURE_CHARS` (48 chars) for horizontal
 `ss09` targets and `SS09_VERTICAL_FEATURE_CHARS` plus
 `SS09_VERTICAL_FEATURE_GLYPHS` for vertical `ss09` targets. The latter uses
@@ -476,8 +477,8 @@ Tests live under `tests/`, split by surface:
   `_is_cjk_codepoint`, `_is_kana_letter`, `_get_cjk_glyphs`,
   `_get_vert_alternates`, `_apply_x_scale`, `_strip_extreme_glyphs`,
   `_apply_tracking`, `_apply_glyph_spacing`, `_glyphs_for_codepoints`,
-  `_split_cmap_codepoint_glyph`, `_get_variable_palt`,
-  explicit palt/ss09 spacing policy, and InterVariable edge-instance
+  `_split_cmap_codepoint_glyph`, explicit palt/ss09 spacing policy, vendor
+  palt/vpal policy checks, and InterVariable edge-instance
   source selection for Thin / ExtraBold.
 - **`src/font/verify_edge_instances.py`** — post-build verification for
   Thin / ExtraBold edge outputs. Confirms the generated InterVariable static
@@ -502,7 +503,7 @@ Tests live under `tests/`, split by surface:
 
 | File | Tests | Verifies |
 |---|---|---|
-| `test_font_build.py` | 108 | UPM scaling policy, project-version metadata forwarding, glyph-name parsing, kana / CJK classification, GSUB/GPOS walk, x-scale, bbox strip, tracking, ss09 feature retargeting, final runtime feature scaling, InterVariable edge-instance compatibility |
+| `test_font_build.py` | 102 | UPM scaling policy, project-version metadata forwarding, glyph-name parsing, kana / CJK classification, GSUB/GPOS walk, x-scale, bbox strip, tracking, ss09 feature retargeting, final runtime feature scaling, InterVariable edge-instance compatibility |
 | `test_proportional.py` | 36 | palt/vpal extraction, glyph translation, GPOS feature removal, runtime-palt/vpal helper coverage + base/residual split + optional squeeze helper, ss09 construction + shaping |
 | `test_release.py` | 2 | GitHub asset URL contract, npm package layout (files glob, license, README, self-host/CDN CSS entrypoints at root) |
 | `test_webfont_build.py` | 42 | Range merge / dedup, unicode-range formatting incl. 5-digit, JIS row mapping, subset plan placement / non-overlap / coverage, strategy parser edge cases |
@@ -534,7 +535,7 @@ flow.
 
 ### Python
 
-- `ofl-font-baker` (>= 0.4.5) — Composite font merge engine. Inherits
+- `ofl-font-baker` (>= 0.4.6) — Composite font merge engine. Inherits
   base/sub identity records via `metadataMode`. Drives Stage 1 (bake)
   and Stage 3 (merge) of the build pipeline. 0.4.0 added
   `subFont.excludeCodepoints` and glyph-name collision rename, used by
@@ -544,7 +545,9 @@ flow.
   so vertical typesetting of overridden glyphs continues to land at the
   base font's intended position. 0.4.5 adds `output.upm`, used by both
   the Noto bake and final merge stages to keep the pipeline on the 2048 UPM
-  Inter grid.
+  Inter grid. 0.4.6 scales layout tables when `output.upm` is applied, so
+  the proportional and vertical positioning data consumed by this pipeline
+  stays on the active build grid.
 - `fonttools` (>= 4.47.0) — Font parsing, instancer, subsetter, GPOS / GSUB
   table editing.
 - `freetype-py` — Used by tooling around metrics inspection.
