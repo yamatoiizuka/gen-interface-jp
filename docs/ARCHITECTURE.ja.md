@@ -79,8 +79,8 @@ FAMILIES × WEIGHTS の各組合せに対して:
   → font-baker bake: variable Noto → static TTF
                     inheritBase で designer/OFL/version を継承
                     weight だけを上書き
-  → inst を再読込し、font-baker が 2048-UPM で bake した出力から
-    palt/vpal 取得 (record はすでに active build grid 上)
+  → inst を再読込し、Noto Variable の baseline palt を active 2048-UPM
+    build grid へ scale して使う; vpal は font-baker が bake した出力から取得
   → ss09 約物を除き Noto の palt エントリを全量で焼き込み
     ss09 約物は 34% を base に焼き、66% を ss09 残差として保持
     (palt なしグリフはメトリクス維持)
@@ -161,14 +161,12 @@ palt record を持ちうるため対象に含める。
 inst に対して 4 つのサブパスを in-place で実行:
 
 1. **palt のベイク / 約物 ss09** (`proportional.make_proportional`) — palt 値は
-   font-baker が作った freshly baked inst TTF から読む。Stage 1 は
-   `output.upm = 2048` で実行済みなので、GPOS ValueRecord はすでに active
-   build grid 上にあり、このプロジェクト側では再スケールしない。同じ glyph に
-   複数の SinglePos lookup が掛かる場合 (Noto の weight-dependent
-   FeatureVariations 適用後など) は、lookup 順に placement / advance delta を
-   加算して読む。Noto の太ウェイト用 FeatureVariation は全角 `Ｍ` と `ｗ` の
-   palt record を追加するが、この 2 glyph は明示的に bake 対象から外し、
-   project 側の tracking-only な全角 Latin spacing 方針を維持する。
+   Noto Variable の baseline vendor palt から読み、Noto の 1000-UPM source
+   grid から active 2048-UPM build grid へ scale する。Noto の Thin から
+   SemiBold までは palt record が同一だが、Bold / ExtraBold では太ウェイト用
+   FeatureVariation に切り替わる。Gen Interface JP では全 output weight で
+   baseline palt の coverage と値を維持し、太ウェイトだけ kana / fullwidth
+   Latin が急に詰まらないようにする。
    XPlacement / XAdvance を LSB / advance に加算しアウトラインをシフト。
    Noto の palt エントリは
    原則として全量で焼き込むが、`PALT_FEATURE_CHARS` の約物は分割する。
@@ -493,7 +491,7 @@ PYTHONPATH=src python3 -m pytest        # 全テスト (~35 秒)
 
 | ファイル | テスト数 | 検証内容 |
 |---|---|---|
-| `test_font_build.py` | 102 | UPM 換算ポリシー、project-version metadata forwarding、グリフ名パース、kana / CJK 分類、GSUB/GPOS 走査、x-scale、bbox 除去、tracking、ss09 feature の retarget、final runtime feature scaling、InterVariable edge instance 互換性 |
+| `test_font_build.py` | 103 | UPM 換算ポリシー、project-version metadata forwarding、グリフ名パース、kana / CJK 分類、GSUB/GPOS 走査、baseline palt 方針、x-scale、bbox 除去、tracking、ss09 feature の retarget、final runtime feature scaling、InterVariable edge instance 互換性 |
 | `test_proportional.py` | 37 | palt/vpal 抽出、SinglePos lookup の加算読み取り、グリフ平行移動、GPOS feature 削除、runtime-palt/vpal helper coverage + base/residual 分割 + optional squeeze helper、ss09 生成 + shaping |
 | `test_release.py` | 2 | GitHub アセット URL 契約、npm パッケージレイアウト (files glob、license、README、self-host/CDN CSS root 配置) |
 | `test_webfont_build.py` | 42 | 範囲マージ / 重複除去、5 桁 hex 含む unicode-range、JIS 区マッピング、サブセット計画の配置 / 非重複 / 完全カバレッジ、ストラテジーパーサーのエッジケース |

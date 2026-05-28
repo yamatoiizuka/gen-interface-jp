@@ -168,10 +168,10 @@ PALT_FEATURE_CHARS = (
 # remaining palt delta through ss09 alternates.
 RUNTIME_PALT_BASE_SCALE = 0.34
 
-# Noto's weight-dependent palt FeatureVariation adds these two fullwidth Latin
-# glyphs only for heavy weights. In this UI family they should stay on the
-# tracking-only path instead of suddenly tightening in Bold / ExtraBold.
-PALT_EXCLUDE_CHARS = ("Ｍ", "ｗ")
+# Noto's weight-dependent palt FeatureVariation changes Bold/ExtraBold spacing
+# abruptly. Use the baseline vendor palt as the source of truth for every
+# weight, matching the historical Gen Interface JP spacing policy.
+_baseline_palt_cache: dict[str, tuple[int, int]] | None = None
 
 # Vertical yakumono glyphs also live under the ss09 "約物半角" feature. The
 # build uses Noto's vpal records as source data but bakes them into .ss09 vmtx
@@ -906,10 +906,16 @@ def _feature_adjustments_for_codepoints(
     }
 
 
-def _remove_palt_exclusions(font: TTFont, adjustments: dict[str, tuple[int, int]]) -> None:
-    """Drop project-owned palt exclusions from a mutable adjustment map."""
-    for glyph_name in _glyphs_for_codepoints(font, PALT_EXCLUDE_CHARS):
-        adjustments.pop(glyph_name, None)
+def _get_baseline_palt() -> dict[str, tuple[int, int]]:
+    """Read Noto's baseline palt feature once and reuse it for every weight."""
+    global _baseline_palt_cache
+    if _baseline_palt_cache is None:
+        source = TTFont(NOTO_VARIABLE)
+        try:
+            _baseline_palt_cache = dict(_read_palt(source))
+        finally:
+            source.close()
+    return _baseline_palt_cache
 
 
 def _runtime_palt_residual_adjustment(
@@ -1258,13 +1264,15 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
     split_source = _split_cmap_codepoint_glyph(font, 0x30FB, "uni30FB")
     ss09_punctuation_glyphs = _glyphs_for_codepoints(font, ss09_punctuation_chars)
 
-    # Read palt/vpal from the freshly baked 2048-UPM inst. font-baker owns the
-    # variable instantiation and UPM conversion here, so proportional records
-    # are already on the active build grid.
-    palt_data = dict(_read_palt(font))
+    # Use Noto's baseline palt for every weight. Thin through SemiBold carry
+    # identical vendor palt values, while Bold / ExtraBold switch to a heavier
+    # FeatureVariation set that looks too tight for this UI family.
+    palt_data = _scale_design_adjustments(dict(_get_baseline_palt()), font_upm)
     if split_source in palt_data:
         palt_data["uni30FB"] = palt_data[split_source]
-    _remove_palt_exclusions(font, palt_data)
+    # Read vpal from the freshly baked 2048-UPM inst. font-baker owns the
+    # variable instantiation and UPM conversion here, so vertical records are
+    # already on the active build grid.
     vpal_data = dict(_read_vpal(font))
     if split_source in vpal_data:
         vpal_data["uni30FB"] = vpal_data[split_source]
