@@ -193,7 +193,7 @@ inst に対して 4 つのサブパスを in-place で実行:
 2. **トラッキング** (`_apply_tracking`) — advance を `tracking` 分広げ、
    `tracking // 2` を LSB に加算してアウトラインを広がった枠の中央に
    配置。kana / 句読点はファミリー設定の `trackingKana` で別値。
-   これらの値は 1000-UPM 設計値として持ち、normal family では `+30` / `+40`
+   これらの値は 1000-UPM 設計値として持ち、normal family では `+30` / `+45`
    を active UPM に換算して適用する。`trackingIgnore` はコードポイント / 範囲を受け取り、cmap で解決した
    グリフを完全にスキップする。デフォルトでは Noto の tracking stage で
    Box Drawing (`U+2500-U+257F`)、Block Elements (`U+2580-U+259F`)、
