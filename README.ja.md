@@ -2,6 +2,8 @@
 
 <p><strong><a href="https://github.com/yamatoiizuka/gen-interface-jp/blob/main/README.md">English</a></strong> | 日本語</p>
 
+[![](https://data.jsdelivr.com/v1/package/npm/gen-interface-jp/badge)](https://www.jsdelivr.com/package/npm/gen-interface-jp)
+
 Gen Interface JP は、デジタルインターフェースのために設計された、欧文と和文の調和を目指す書体です。  
 明快な UI 用書体である Inter に Noto Sans JP の和文グリフを合わせ、多言語環境で一貫した読みやすさを実現します。
 

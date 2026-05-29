@@ -2,6 +2,8 @@
 
 <p>English | <strong><a href="https://github.com/yamatoiizuka/gen-interface-jp/blob/main/README.ja.md">日本語</a></strong></p>
 
+[![](https://data.jsdelivr.com/v1/package/npm/gen-interface-jp/badge)](https://www.jsdelivr.com/package/npm/gen-interface-jp)
+
 Gen Interface JP is a typeface designed for digital interfaces that aims to harmonize Latin script with Japanese. Blending Inter with Noto Sans JP, it ensures consistent readability across multiple languages.
 
 ## Overview
