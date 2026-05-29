@@ -12,7 +12,7 @@ import re
 from pathlib import Path
 
 import pytest
-from fontTools.ttLib import TTFont
+from fontTools.ttLib import TTFont, newTable
 
 from font.build import (
     _apply_glyph_spacing,
@@ -44,9 +44,11 @@ from font.build import (
     _scale_feature_adjustments,
     _scale_design_unit,
     _scale_glyph_spacing,
+    _scale_vertical_body_metrics,
     _select_build_matrix,
     _split_cmap_codepoint_glyph,
     _strip_extreme_glyphs,
+    _vertical_body_glyphs,
     _build_inter_variable_instance,
     _default_inter_static_path,
     _inter_source_path,
@@ -942,6 +944,62 @@ class TestPaltSymbolPolicy:
         }
 
         assert expected_glyphs <= set(vpal)
+
+    def _add_vmtx(self, font: TTFont, metrics: dict[str, tuple[int, int]]) -> None:
+        vmtx = newTable("vmtx")
+        vmtx.metrics = {
+            glyph_name: metrics.get(glyph_name, (1000, 100))
+            for glyph_name in font.getGlyphOrder()
+        }
+        font["vmtx"] = vmtx
+
+    def _transform_y(self, font: TTFont, scale: float, offset: int) -> None:
+        glyf = font["glyf"]
+        for glyph_name in font.getGlyphOrder():
+            glyph = glyf[glyph_name]
+            if glyph.isComposite():
+                for component in glyph.components:
+                    component.y = round(component.y * scale + offset)
+                continue
+            if glyph.numberOfContours <= 0:
+                continue
+            for i, (x, y) in enumerate(glyph.coordinates):
+                glyph.coordinates[i] = (x, round(y * scale + offset))
+            glyph.recalcBounds(glyf)
+
+    def test_vertical_body_glyphs_include_japanese_not_latin(self, synthetic_ttf):
+        glyphs = _vertical_body_glyphs(synthetic_ttf)
+
+        assert "uni3042" in glyphs
+        assert "uni4E00" in glyphs
+        assert "uni3001" in glyphs
+        assert "A" not in glyphs
+
+    def test_vertical_body_metrics_scale_advance_and_origin(self, synthetic_ttf):
+        source = synthetic_ttf
+        final = copy.deepcopy(synthetic_ttf)
+        metrics = {
+            "A": (1000, 100),
+            "uni3042": (1000, 100),
+            "uni4E00": (1000, 120),
+            "uni3001": (1000, 100),
+        }
+        self._add_vmtx(source, metrics)
+        self._add_vmtx(final, metrics)
+        self._transform_y(final, scale=0.8, offset=20)
+
+        adjusted = _scale_vertical_body_metrics(
+            final,
+            source,
+            scale=0.8,
+            baseline_offset=20,
+        )
+
+        assert adjusted >= 3
+        assert final["vmtx"]["uni3042"] == (800, 80)
+        assert final["vmtx"]["uni4E00"] == (800, 96)
+        assert final["vmtx"]["uni3001"] == (800, 80)
+        assert final["vmtx"]["A"] == (1000, 100)
 
     def test_scales_final_runtime_feature_adjustments_by_optical_scale(self):
         adjustments = {
