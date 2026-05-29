@@ -243,6 +243,17 @@ UPM 変換ではなく光学的な CJK デザインスケールとして残し�
 Inter の cap-height と揃うように Noto を縮める — 欧文/CJK 混植で CJK を少し
 小さくして釣り合いを取る、という慣例的な配分。
 
+merge 後は和文の縦書き body metrics も再計算する。Noto 由来の `vmtx`
+advanceHeight は `SCALE` で縮小し、top sidebearing は merge 前の縦 origin に
+同じベースライン基準の transform (`originY * SCALE + BASELINE_OFFSET`) を
+掛けた位置から逆算する。これにより、アウトラインだけが縮小されているのに
+縦組みの仮想ボディが元の 2048 正方のまま残る状態を避ける。ASCII Latin は
+元の vertical metrics を維持し、かな / CJK / 全角 / 和文約物 / vertical-form
+alternate だけが Noto scale に追従する。font-baker が merge 時に Noto/base
+glyph を rename した場合は、final glyph と source glyph を共有 Unicode
+codepoint 経由で対応付け、source 側の値から計算した metric を final の
+renamed glyph に書き戻す。
+
 `output.version` は共有 helper `project_metadata.project_version()` 経由で
 `pyproject.toml` から読み、final TTF の nameID 5 と nameID 3 に
 release zip / npm package / site metadata と同じ project/release version を
@@ -465,7 +476,7 @@ PYTHONPATH=src python3 -m pytest        # 全テスト (~35 秒)
   全グリフ走査が必要な mutation テスト用には `FontBuilder` で組み立てた
   最小 TrueType (Noto 17000 グリフを毎回触るのは無駄)。
 - **`tests/test_font_build.py`** — CLI build selection / parallel intermediate
-  path separation、UPM 設計値換算、project-version metadata
+  path separation、和文 vertical body scaling、UPM 設計値換算、project-version metadata
   forwarding
   (`SOURCE_UPM = 1000`, `TARGET_UPM = 2048`)、`_glyph_codepoint`, `_is_kana_or_punct`,
   `_is_cjk_codepoint`, `_is_kana_letter`, `_get_cjk_glyphs`,
@@ -497,7 +508,7 @@ PYTHONPATH=src python3 -m pytest        # 全テスト (~35 秒)
 
 | ファイル | テスト数 | 検証内容 |
 |---|---|---|
-| `test_font_build.py` | 110 | CLI build selection / parallel intermediate path separation、UPM 換算ポリシー、project-version metadata forwarding、グリフ名パース、kana / CJK 分類、GSUB/GPOS 走査、baseline palt 方針、x-scale、bbox 除去、tracking、ss09 feature の retarget、final runtime feature scaling、InterVariable edge instance 互換性 |
+| `test_font_build.py` | 113 | CLI build selection / parallel intermediate path separation、和文 vertical body scaling、UPM 換算ポリシー、project-version metadata forwarding、グリフ名パース、kana / CJK 分類、GSUB/GPOS 走査、baseline palt 方針、x-scale、bbox 除去、tracking、ss09 feature の retarget、final runtime feature scaling、InterVariable edge instance 互換性 |
 | `test_proportional.py` | 37 | palt/vpal 抽出、SinglePos lookup の加算読み取り、グリフ平行移動、GPOS feature 削除、runtime-palt/vpal helper coverage + base/residual 分割 + optional squeeze helper、ss09 生成 + shaping |
 | `test_release.py` | 2 | GitHub アセット URL 契約、npm パッケージレイアウト (files glob、license、README、self-host/CDN CSS root 配置) |
 | `test_webfont_build.py` | 42 | 範囲マージ / 重複除去、5 桁 hex 含む unicode-range、JIS 区マッピング、サブセット計画の配置 / 非重複 / 完全カバレッジ、ストラテジーパーサーのエッジケース |

@@ -885,6 +885,148 @@ def _codepoints_for_entries(codepoint_entries: list | tuple | set | None) -> set
     return codepoints
 
 
+def _is_japanese_vertical_body_codepoint(cp: int) -> bool:
+    """Return True for glyphs whose vertical body should follow Noto scale."""
+    return (
+        _is_cjk_codepoint(cp)
+        or 0x3000 <= cp <= 0x303F    # CJK Symbols and Punctuation
+        or 0x3040 <= cp <= 0x309F    # Hiragana
+        or 0x30A0 <= cp <= 0x30FF    # Katakana
+        or 0x31F0 <= cp <= 0x31FF    # Katakana Phonetic Extensions
+        or 0xFE10 <= cp <= 0xFE4F    # Vertical forms / CJK compatibility forms
+        or 0xFF00 <= cp <= 0xFFEF    # Halfwidth and Fullwidth Forms
+    )
+
+
+def _vertical_body_extra_codepoints() -> set[int]:
+    """Return configured Japanese punctuation/symbol codepoints outside blocks."""
+    return _codepoints_for_entries(
+        (
+            *TRACKING_IGNORE_CODEPOINTS,
+            *PALT_FEATURE_CHARS,
+            *SS09_VERTICAL_FEATURE_CHARS,
+            *PALT_SPACE_ADJUSTMENTS.keys(),
+        )
+    )
+
+
+def _vertical_body_glyphs(font: TTFont) -> set[str]:
+    """Resolve final glyphs whose vertical advance should match Noto scale."""
+    cmap = font.getBestCmap() or {}
+    extra_codepoints = _vertical_body_extra_codepoints()
+    glyphs = {
+        glyph_name
+        for cp, glyph_name in cmap.items()
+        if _is_japanese_vertical_body_codepoint(cp) or cp in extra_codepoints
+    }
+    glyphs.update(_get_vert_alternates(font))
+    glyphs.update(SS09_VERTICAL_FEATURE_GLYPHS)
+    return glyphs
+
+
+def _glyph_y_max(font: TTFont, glyph_name: str) -> int:
+    """Return a glyph's yMax, treating empty glyphs as origin-height."""
+    glyph = font["glyf"][glyph_name]
+    if glyph.isComposite():
+        glyph.recalcBounds(font["glyf"])
+    if getattr(glyph, "numberOfContours", 0) == 0:
+        return 0
+    return getattr(glyph, "yMax", 0) or 0
+
+
+def _source_glyphs_by_final_glyph(
+    final_font: TTFont,
+    source_font: TTFont,
+) -> dict[str, str]:
+    """Map final cmap glyphs back to source cmap glyphs by codepoint."""
+    final_cmap = final_font.getBestCmap() or {}
+    source_cmap = source_font.getBestCmap() or {}
+    source_order = set(source_font.getGlyphOrder())
+    mapping = {}
+    for cp, final_glyph in final_cmap.items():
+        source_glyph = source_cmap.get(cp)
+        if source_glyph in source_order:
+            mapping[final_glyph] = source_glyph
+    return mapping
+
+
+def _scale_vertical_body_metrics(
+    font: TTFont,
+    source_font: TTFont,
+    scale: float,
+    baseline_offset: int,
+    glyph_names: set[str] | None = None,
+) -> int:
+    """Scale Japanese vertical body metrics after Noto outline scaling.
+
+    font-baker scales Noto outlines and applies the baseline offset during the
+    final merge, but leaves vmtx advances/top sidebearings on the original
+    2048-UPM body. Recompute vmtx from the pre-merge Noto source origin so the
+    vertical advance box follows the same baseline-based transform as outlines.
+    """
+    if "vmtx" not in font or "vmtx" not in source_font:
+        return 0
+    if "glyf" not in font or "glyf" not in source_font:
+        return 0
+
+    final_order = set(font.getGlyphOrder())
+    source_order = set(source_font.getGlyphOrder())
+    final_to_source = _source_glyphs_by_final_glyph(font, source_font)
+    targets = glyph_names if glyph_names is not None else _vertical_body_glyphs(font)
+    adjusted = 0
+
+    for glyph_name in sorted(targets):
+        if glyph_name not in final_order:
+            continue
+        if glyph_name not in font["vmtx"].metrics:
+            continue
+
+        source_glyph_name = glyph_name
+        if source_glyph_name not in source_order:
+            source_glyph_name = final_to_source.get(glyph_name)
+        if source_glyph_name is None or source_glyph_name not in source_order:
+            continue
+        if source_glyph_name not in source_font["vmtx"].metrics:
+            continue
+
+        source_advance, source_tsb = source_font["vmtx"][source_glyph_name]
+        source_origin_y = _glyph_y_max(source_font, source_glyph_name) + source_tsb
+        final_origin_y = round(source_origin_y * scale + baseline_offset)
+        final_advance = round(source_advance * scale)
+        final_tsb = final_origin_y - _glyph_y_max(font, glyph_name)
+        next_metric = (final_advance, final_tsb)
+
+        if font["vmtx"][glyph_name] != next_metric:
+            font["vmtx"][glyph_name] = next_metric
+            adjusted += 1
+
+    return adjusted
+
+
+def _scale_vertical_body_metrics_after_merge(
+    final_path: str,
+    source_path: str,
+    scale: float,
+    baseline_offset: int,
+) -> int:
+    """Apply Japanese vmtx body scaling to a merged final font on disk."""
+    font = TTFont(final_path)
+    source_font = TTFont(source_path)
+    try:
+        adjusted = _scale_vertical_body_metrics(
+            font,
+            source_font,
+            scale,
+            baseline_offset,
+        )
+        if adjusted:
+            font.save(final_path)
+        return adjusted
+    finally:
+        font.close()
+        source_font.close()
+
+
 def _feature_adjustments_for_codepoints(
     font: TTFont,
     codepoint_entries: list | tuple | set | None,
@@ -1377,6 +1519,14 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
     _assert_target_upm(final_font, final_path)
     final_font.close()
     _normalize_layout_coverage_order(final_path)
+    vertical_body_adjusted = _scale_vertical_body_metrics_after_merge(
+        final_path,
+        prop_path,
+        SCALE,
+        baseline_offset,
+    )
+    if vertical_body_adjusted:
+        print(f"          Vertical body metrics: {vertical_body_adjusted} glyph(s) adjusted")
     _refresh_ss09_feature_after_merge(
         final_path,
         _scale_feature_adjustments(ss09_punctuation_by_codepoint, SCALE),
