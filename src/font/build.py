@@ -934,6 +934,22 @@ def _glyph_y_max(font: TTFont, glyph_name: str) -> int:
     return getattr(glyph, "yMax", 0) or 0
 
 
+def _source_glyphs_by_final_glyph(
+    final_font: TTFont,
+    source_font: TTFont,
+) -> dict[str, str]:
+    """Map final cmap glyphs back to source cmap glyphs by codepoint."""
+    final_cmap = final_font.getBestCmap() or {}
+    source_cmap = source_font.getBestCmap() or {}
+    source_order = set(source_font.getGlyphOrder())
+    mapping = {}
+    for cp, final_glyph in final_cmap.items():
+        source_glyph = source_cmap.get(cp)
+        if source_glyph in source_order:
+            mapping[final_glyph] = source_glyph
+    return mapping
+
+
 def _scale_vertical_body_metrics(
     font: TTFont,
     source_font: TTFont,
@@ -955,19 +971,26 @@ def _scale_vertical_body_metrics(
 
     final_order = set(font.getGlyphOrder())
     source_order = set(source_font.getGlyphOrder())
+    final_to_source = _source_glyphs_by_final_glyph(font, source_font)
     targets = glyph_names if glyph_names is not None else _vertical_body_glyphs(font)
     adjusted = 0
 
     for glyph_name in sorted(targets):
-        if glyph_name not in final_order or glyph_name not in source_order:
+        if glyph_name not in final_order:
             continue
         if glyph_name not in font["vmtx"].metrics:
             continue
-        if glyph_name not in source_font["vmtx"].metrics:
+
+        source_glyph_name = glyph_name
+        if source_glyph_name not in source_order:
+            source_glyph_name = final_to_source.get(glyph_name)
+        if source_glyph_name is None or source_glyph_name not in source_order:
+            continue
+        if source_glyph_name not in source_font["vmtx"].metrics:
             continue
 
-        source_advance, source_tsb = source_font["vmtx"][glyph_name]
-        source_origin_y = _glyph_y_max(source_font, glyph_name) + source_tsb
+        source_advance, source_tsb = source_font["vmtx"][source_glyph_name]
+        source_origin_y = _glyph_y_max(source_font, source_glyph_name) + source_tsb
         final_origin_y = round(source_origin_y * scale + baseline_offset)
         final_advance = round(source_advance * scale)
         final_tsb = final_origin_y - _glyph_y_max(font, glyph_name)

@@ -249,7 +249,10 @@ advanceHeight は `SCALE` で縮小し、top sidebearing は merge 前の縦 ori
 掛けた位置から逆算する。これにより、アウトラインだけが縮小されているのに
 縦組みの仮想ボディが元の 2048 正方のまま残る状態を避ける。ASCII Latin は
 元の vertical metrics を維持し、かな / CJK / 全角 / 和文約物 / vertical-form
-alternate だけが Noto scale に追従する。
+alternate だけが Noto scale に追従する。font-baker が merge 時に Noto/base
+glyph を rename した場合は、final glyph と source glyph を共有 Unicode
+codepoint 経由で対応付け、source 側の値から計算した metric を final の
+renamed glyph に書き戻す。
 
 `output.version` は共有 helper `project_metadata.project_version()` 経由で
 `pyproject.toml` から読み、final TTF の nameID 5 と nameID 3 に
@@ -505,7 +508,7 @@ PYTHONPATH=src python3 -m pytest        # 全テスト (~35 秒)
 
 | ファイル | テスト数 | 検証内容 |
 |---|---|---|
-| `test_font_build.py` | 112 | CLI build selection / parallel intermediate path separation、和文 vertical body scaling、UPM 換算ポリシー、project-version metadata forwarding、グリフ名パース、kana / CJK 分類、GSUB/GPOS 走査、baseline palt 方針、x-scale、bbox 除去、tracking、ss09 feature の retarget、final runtime feature scaling、InterVariable edge instance 互換性 |
+| `test_font_build.py` | 113 | CLI build selection / parallel intermediate path separation、和文 vertical body scaling、UPM 換算ポリシー、project-version metadata forwarding、グリフ名パース、kana / CJK 分類、GSUB/GPOS 走査、baseline palt 方針、x-scale、bbox 除去、tracking、ss09 feature の retarget、final runtime feature scaling、InterVariable edge instance 互換性 |
 | `test_proportional.py` | 37 | palt/vpal 抽出、SinglePos lookup の加算読み取り、グリフ平行移動、GPOS feature 削除、runtime-palt/vpal helper coverage + base/residual 分割 + optional squeeze helper、ss09 生成 + shaping |
 | `test_release.py` | 2 | GitHub アセット URL 契約、npm パッケージレイアウト (files glob、license、README、self-host/CDN CSS root 配置) |
 | `test_webfont_build.py` | 42 | 範囲マージ / 重複除去、5 桁 hex 含む unicode-range、JIS 区マッピング、サブセット計画の配置 / 非重複 / 完全カバレッジ、ストラテジーパーサーのエッジケース |

@@ -258,7 +258,9 @@ baseline-based transform (`originY * SCALE + BASELINE_OFFSET`). This keeps the
 vertical writing body from staying at the original 2048-square while the
 outline has been optically scaled down. ASCII Latin keeps its original vertical
 metrics; kana, CJK, fullwidth forms, Japanese punctuation, and vertical-form
-alternates follow the Noto scale.
+alternates follow the Noto scale. If font-baker renamed a Noto/base glyph
+during merge, the metric pass resolves the source glyph through the shared
+Unicode codepoint and writes the scaled metric back to the final renamed glyph.
 
 `output.version` is read from `pyproject.toml` via the shared
 `project_metadata.project_version()` helper, so final TTF nameID 5 and
@@ -522,7 +524,7 @@ Tests live under `tests/`, split by surface:
 
 | File | Tests | Verifies |
 |---|---|---|
-| `test_font_build.py` | 112 | CLI build selection and parallel intermediate path separation, Japanese vertical body scaling, UPM scaling policy, project-version metadata forwarding, glyph-name parsing, kana / CJK classification, GSUB/GPOS walk, baseline palt policy, x-scale, bbox strip, tracking, ss09 feature retargeting, final runtime feature scaling, InterVariable edge-instance compatibility |
+| `test_font_build.py` | 113 | CLI build selection and parallel intermediate path separation, Japanese vertical body scaling, UPM scaling policy, project-version metadata forwarding, glyph-name parsing, kana / CJK classification, GSUB/GPOS walk, baseline palt policy, x-scale, bbox strip, tracking, ss09 feature retargeting, final runtime feature scaling, InterVariable edge-instance compatibility |
 | `test_proportional.py` | 37 | palt/vpal extraction, cumulative SinglePos lookup reading, glyph translation, GPOS feature removal, runtime-palt/vpal helper coverage + base/residual split + optional squeeze helper, ss09 construction + shaping |
 | `test_release.py` | 2 | GitHub asset URL contract, npm package layout (files glob, license, README, self-host/CDN CSS entrypoints at root) |
 | `test_webfont_build.py` | 42 | Range merge / dedup, unicode-range formatting incl. 5-digit, JIS row mapping, subset plan placement / non-overlap / coverage, strategy parser edge cases |
