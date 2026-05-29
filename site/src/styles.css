@@ -22,10 +22,8 @@ html {
      narrow phones. 460–1280px stays at 16px. Above 1280px scales linearly
      with viewport (1.25vw = 16px at 1280, 24px at 1920). */
   font-size: max(min(16px, calc(100vw / 28.75)), 1.25vw);
-  /* Disable iOS auto text inflation. X's in-app browser (WKWebView) was
-     shrinking the large reference `<span>` "デザイン" while SVG paths in the
-     same group rendered fine — only HTML text is affected by text-size-adjust,
-     which is why one element drifted while its SVG sibling did not. */
+  /* Disable iOS auto text inflation for ordinary HTML copy. Composition's
+     large glyph samples are SVG paths so their metric overlay stays fixed. */
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
 }
@@ -357,9 +355,9 @@ h2 {
   top: 1.1875rem;
 }
 
-/* Faint reference: the original Gen Interface JP CSS rendering, tinted blue
-   (var(--color-accent)) at 5% opacity so the actual simulation reads black
-   on top while any misalignment shows as a tiny blue ghost. */
+/* Faint reference: the final path rendering at DEFAULT_PARAMS. It uses the
+   same SVG coordinate system as the live simulation so mobile Safari cannot
+   drift the target layer via HTML text baseline differences. */
 .composition__group-text--reference {
   color: #000;
   opacity: 0.1;

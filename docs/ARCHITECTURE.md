@@ -195,7 +195,7 @@ Four sub-passes, all in-place on the inst:
    `tracking // 2` is added to LSB so the outline sits centred in the
    wider slot. Kana / punctuation get a separate `trackingKana` value
    when set on the family. These constants are authored on the 1000-UPM
-   design grid (`+30` / `+40` for the normal family) and scaled to the
+   design grid (`+30` / `+45` for the normal family) and scaled to the
    active UPM before application. `trackingIgnore` accepts codepoints / ranges
    and skips glyphs resolved through cmap. The default ignore list keeps
    the Noto tracking stage from widening Box Drawing (`U+2500-U+257F`),

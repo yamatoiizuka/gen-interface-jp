@@ -35,6 +35,7 @@ type Props = {
   paltAmount?: number;
   yShift?: number;
   ariaLabel?: string;
+  ariaHidden?: boolean;
   className?: string;
   style?: CSSProperties;
 };
@@ -128,10 +129,11 @@ export function CompositionGlyphText({
   weight = 465,
   scale = 0.925,
   tracking = 30,
-  trackingKana = 40,
+  trackingKana = 45,
   paltAmount = 1,
   yShift = 0,
   ariaLabel,
+  ariaHidden,
   className,
   style,
 }: Props) {
@@ -151,8 +153,10 @@ export function CompositionGlyphText({
   return (
     <svg
       className={className}
-      role={ariaLabel ? "img" : undefined}
-      aria-label={ariaLabel}
+      role={ariaHidden ? undefined : ariaLabel ? "img" : undefined}
+      aria-label={ariaHidden ? undefined : ariaLabel}
+      aria-hidden={ariaHidden}
+      focusable={ariaHidden ? "false" : undefined}
       style={{
         ...style,
         display: "block",

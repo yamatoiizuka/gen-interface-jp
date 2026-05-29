@@ -12,7 +12,7 @@ Shared pipeline per weight:
      subFont.excludeCodepoints to keep CJK-conventional symbols on Noto)
 
 Families:
-  - Gen Interface JP         : Inter       + proportional Noto, tracking +30 (kana/punct +40) at 1000 UPM
+  - Gen Interface JP         : Inter       + proportional Noto, tracking +30 (kana/punct +45) at 1000 UPM
   - Gen Interface JP Display : InterDisplay + proportional Noto, tracking +0
 
 Outputs TTF into dist/ttf/. Web delivery (subset WOFF2 chunks served via
@@ -120,8 +120,8 @@ def _assert_target_upm(font: TTFont, path: str) -> None:
 # to each Latin master, hence the off-grid numbers (e.g. 465 for Regular,
 # 800 for Bold).
 WEIGHTS = [
-    (100, "Thin",       100),
-    (200, "ExtraLight",  260),
+    (100, "Thin",        100),
+    (200, "ExtraLight",  270),
     (300, "Light",       355),
     (400, "Regular",     465),
     (500, "Medium",      575),
@@ -228,7 +228,7 @@ PALT_SPACE_ADJUSTMENTS = {
 
 
 NORMAL_TRACKING = 30
-NORMAL_TRACKING_KANA = 40
+NORMAL_TRACKING_KANA = 45
 DISPLAY_TRACKING = 0
 DISPLAY_TRACKING_KANA = 0
 
