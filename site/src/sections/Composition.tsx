@@ -364,12 +364,17 @@ export function Composition() {
                   style={{ top: `${y / 16}rem` }}
                 />
               ))}
-              <span
-                className="composition__group-text composition__group-text--left composition__group-text--reference"
-                aria-hidden="true"
-              >
-                書体
-              </span>
+              <CompositionGlyphText
+                className="composition__group-text composition__group-text--left composition__group-text--svg composition__group-text--reference"
+                shapeKey="jp-type"
+                ariaHidden
+                weight={DEFAULT_PARAMS.wght}
+                scale={DEFAULT_PARAMS.scale}
+                tracking={DEFAULT_PARAMS.tracking}
+                trackingKana={DEFAULT_PARAMS.trackingKana}
+                paltAmount={DEFAULT_PARAMS.paltAmount}
+                yShift={DEFAULT_PARAMS.yShift}
+              />
               <CompositionGlyphText
                 className="composition__group-text composition__group-text--left composition__group-text--svg"
                 shapeKey="jp-type"
@@ -418,12 +423,17 @@ export function Composition() {
                   style={{ top: `${y / 16}rem` }}
                 />
               ))}
-              <span
-                className="composition__group-text composition__group-text--left composition__group-text--reference"
-                aria-hidden="true"
-              >
-                デザイン
-              </span>
+              <CompositionGlyphText
+                className="composition__group-text composition__group-text--left composition__group-text--svg composition__group-text--reference"
+                shapeKey="jp-design"
+                ariaHidden
+                weight={DEFAULT_PARAMS.wght}
+                scale={DEFAULT_PARAMS.scale}
+                tracking={DEFAULT_PARAMS.tracking}
+                trackingKana={DEFAULT_PARAMS.trackingKana}
+                paltAmount={DEFAULT_PARAMS.paltAmount}
+                yShift={DEFAULT_PARAMS.yShift}
+              />
               <CompositionGlyphText
                 className="composition__group-text composition__group-text--left composition__group-text--svg"
                 shapeKey="jp-design"
