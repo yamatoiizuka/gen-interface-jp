@@ -121,7 +121,7 @@ def _assert_target_upm(font: TTFont, path: str) -> None:
 # 800 for Bold).
 WEIGHTS = [
     (100, "Thin",        100),
-    (200, "ExtraLight",  265),
+    (200, "ExtraLight",  270),
     (300, "Light",       355),
     (400, "Regular",     465),
     (500, "Medium",      575),

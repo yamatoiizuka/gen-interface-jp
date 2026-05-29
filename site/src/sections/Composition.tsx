@@ -38,7 +38,7 @@ const DEFAULT_PARAMS: TunerProps = {
   wght: 465,
   scale: 0.925,
   tracking: 30,
-  trackingKana: 40,
+  trackingKana: 45,
   paltAmount: 1,
   yShift: 25,
 };
