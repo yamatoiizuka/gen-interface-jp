@@ -12,7 +12,7 @@ Shared pipeline per weight:
      subFont.excludeCodepoints to keep CJK-conventional symbols on Noto)
 
 Families:
-  - Gen Interface JP         : Inter       + proportional Noto, tracking +30 (kana/punct +45, vertical JP +10) at 1000 UPM
+  - Gen Interface JP         : Inter       + proportional Noto, tracking +30 (kana/punct +45, vertical JP +9) at 1000 UPM
   - Gen Interface JP Display : InterDisplay + proportional Noto, tracking +0
 
 Outputs TTF into dist/ttf/. Web delivery (subset WOFF2 chunks served via

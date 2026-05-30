@@ -90,7 +90,7 @@ FAMILIES × WEIGHTS の各組合せに対して:
   → _apply_tracking で advance を広げ LSB を半分シフト
     ただし family["trackingIgnore"] の連続・隙間なし記号は除外
   → normal family では Inter merge 前の Noto 中間 font に対し、
-    和文縦組み glyph の vmtx advance に +10 設計 units を加える;
+    和文縦組み glyph の vmtx advance に +9 設計 units を加える;
     Display は +0 のまま
   → _apply_glyph_spacing で family["glyphSpacing"] の個別調整を適用
   → _strip_extreme_glyphs で縦組み用繰り返し記号 〱-〵 を無効化
