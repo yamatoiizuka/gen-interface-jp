@@ -377,7 +377,7 @@ class TestShiftGlyphX:
 # ---------------------------------------------------------------------------
 
 class TestRemovePropFeatures:
-    """Strip palt/vpal/halt/vhal from GPOS while keeping other features."""
+    """Strip palt/vpal/halt/vhal/vkrn from GPOS while keeping horizontal kern."""
 
     def test_palt_is_removed(self, noto_subset):
         gpos = noto_subset["GPOS"]
@@ -388,6 +388,16 @@ class TestRemovePropFeatures:
 
         after = {fr.FeatureTag for fr in gpos.table.FeatureList.FeatureRecord}
         assert "palt" not in after
+
+    def test_vertical_kerning_is_removed(self, noto_subset):
+        gpos = noto_subset["GPOS"]
+        before = {fr.FeatureTag for fr in gpos.table.FeatureList.FeatureRecord}
+        assert "vkrn" in before
+
+        _remove_prop_features(noto_subset)
+
+        after = {fr.FeatureTag for fr in gpos.table.FeatureList.FeatureRecord}
+        assert "vkrn" not in after
 
     def test_all_prop_features_removed(self, noto_subset):
         _remove_prop_features(noto_subset)
@@ -533,6 +543,52 @@ class TestInstallSS09Punctuation:
         ].Feature.LookupListIndex[0]
         lookup = synthetic_ttf["GSUB"].table.LookupList.Lookup[lookup_index]
         assert lookup.SubTable[0].mapping["uniFE11"] == "uniFE11.ss09"
+
+    def test_vertical_text_ignores_horizontal_ss09_without_vertical_adjustments(
+        self,
+        synthetic_ttf,
+    ):
+        hb = pytest.importorskip("uharfbuzz")
+        glyph_order = [*synthetic_ttf.getGlyphOrder(), "uniFE11"]
+        synthetic_ttf.setGlyphOrder(glyph_order)
+        synthetic_ttf["glyf"]["uniFE11"] = copy.deepcopy(
+            synthetic_ttf["glyf"]["uni3001"]
+        )
+        synthetic_ttf["hmtx"].metrics["uniFE11"] = synthetic_ttf["hmtx"]["uni3001"]
+        vmtx = newTable("vmtx")
+        vmtx.metrics = {
+            glyph_name: (1000, 100)
+            for glyph_name in synthetic_ttf.getGlyphOrder()
+        }
+        synthetic_ttf["vmtx"] = vmtx
+        _install_synthetic_gsub_single_subst_feature(
+            synthetic_ttf,
+            "vert",
+            {"uni3001": "uniFE11"},
+        )
+
+        _install_ss09_punctuation_feature(
+            synthetic_ttf,
+            {"uni3001": (0, -100)},
+        )
+
+        buffer = io.BytesIO()
+        synthetic_ttf.save(buffer)
+        font_data = buffer.getvalue()
+        glyph_order = synthetic_ttf.getGlyphOrder()
+        face = hb.Face(font_data)
+        hb_font = hb.Font(face)
+        hb_buffer = hb.Buffer()
+        hb_buffer.add_str("、")
+        hb_buffer.direction = "ttb"
+        hb_buffer.script = "kana"
+        hb_buffer.language = "ja"
+        hb.shape(hb_font, hb_buffer, {"ss09": 1})
+
+        assert [
+            glyph_order[info.codepoint]
+            for info in hb_buffer.glyph_infos
+        ] == ["uniFE11"]
 
     def test_harfbuzz_uses_ss09_only_when_feature_is_enabled(self, synthetic_ttf):
         hb = pytest.importorskip("uharfbuzz")
@@ -717,7 +773,7 @@ class TestMakeProportional:
             for fr in noto_subset["GPOS"].table.FeatureList.FeatureRecord
         }
         assert "palt" in tags
-        assert not ({"vpal", "halt", "vhal"} & tags)
+        assert not ({"vpal", "halt", "vhal", "vkrn"} & tags)
 
     def test_runtime_palt_can_bake_base_fraction_and_reinstall_residual(self, noto_subset):
         cmap = noto_subset.getBestCmap()
@@ -802,7 +858,7 @@ class TestMakeProportional:
             for fr in noto_subset["GPOS"].table.FeatureList.FeatureRecord
         }
         assert {"palt", "vpal"} <= tags
-        assert not ({"halt", "vhal"} & tags)
+        assert not ({"halt", "vhal", "vkrn"} & tags)
 
     def test_runtime_palt_does_not_keep_baked_glyphs_in_feature(self, noto_subset):
         cmap = noto_subset.getBestCmap()

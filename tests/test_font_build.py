@@ -17,6 +17,7 @@ from fontTools.ttLib import TTFont, newTable
 from font.build import (
     _apply_glyph_spacing,
     _apply_tracking,
+    _apply_vertical_tracking,
     _apply_x_scale,
     _EXTREME_YMAX,
     _EXTREME_YMIN,
@@ -53,11 +54,13 @@ from font.build import (
     _default_inter_static_path,
     _inter_source_path,
     DISPLAY_PALT_SPACE_ADJUSTMENTS,
+    DISPLAY_VERTICAL_TRACKING,
     FAMILIES,
     INTER_VARIABLE,
     INTER_VARIABLE_EDGE_WEIGHTS,
     NOTO_VARIABLE,
     NORMAL_PALT_SPACE_ADJUSTMENTS,
+    NORMAL_VERTICAL_TRACKING,
     PALT_FEATURE_CHARS,
     PALT_SPACE_ADJUSTMENTS,
     RUNTIME_PALT_BASE_SCALE,
@@ -73,13 +76,11 @@ from font.build import (
 from font.proportional import (
     _install_ss09_punctuation_feature,
     _read_palt,
-    _read_vpal,
 )
 from merge_fonts import parse_codepoint_list
 
 
 _vendor_palt_cache: dict[str, tuple[int, int]] | None = None
-_vendor_vpal_cache: dict[str, tuple[int, int]] | None = None
 
 
 def _vendor_palt() -> dict[str, tuple[int, int]]:
@@ -92,18 +93,6 @@ def _vendor_palt() -> dict[str, tuple[int, int]]:
         finally:
             font.close()
     return _vendor_palt_cache
-
-
-def _vendor_vpal() -> dict[str, tuple[int, int]]:
-    """Read full vendor Noto vpal data for policy assertions."""
-    global _vendor_vpal_cache
-    if _vendor_vpal_cache is None:
-        font = TTFont(NOTO_VARIABLE)
-        try:
-            _vendor_vpal_cache = _read_vpal(font)
-        finally:
-            font.close()
-    return _vendor_vpal_cache
 
 
 def _layout_feature_tags(font: TTFont, table_tag: str) -> set[str]:
@@ -911,39 +900,21 @@ class TestPaltSymbolPolicy:
         assert _runtime_palt_residual_adjustment((-250, -500)) == (-165, -330)
         assert _runtime_palt_residual_adjustment((-70, -140)) == (-46, -92)
 
-    def test_family_config_exposes_ss09_without_runtime_vpal(self):
+    def test_family_config_exposes_horizontal_ss09_only(self):
         for family in FAMILIES.values():
             assert family["runtimePalt"] == PALT_FEATURE_CHARS
             assert "runtimeVpal" not in family
 
-    def test_vertical_yakumono_uses_ss09_targets_not_runtime_vpal(self):
-        vpal = _vendor_vpal()
-        assert "glyph17071" in SS09_VERTICAL_FEATURE_GLYPHS
-        assert SS09_SYNTHETIC_VERTICAL_ADJUSTMENTS == {
-            "uniFF1B": (250, -500),
-        }
+    def test_vertical_yakumono_ss09_is_disabled(self):
+        assert SS09_VERTICAL_FEATURE_CHARS == ()
+        assert SS09_VERTICAL_FEATURE_GLYPHS == ()
+        assert SS09_SYNTHETIC_VERTICAL_ADJUSTMENTS == {}
 
-        for char in (
-            "〒・︐︑︒︗︘︵︶︷︸︹︺︻︼︽︾︿﹀﹁﹂﹃﹄﹇﹈"
-            "！＃＄％＆＊？￥；"
-        ):
-            assert char in SS09_VERTICAL_FEATURE_CHARS
-
-        expected_glyphs = {
-            "uni3012",  # 〒
-            "uni2027",  # ・ (Noto source glyph before U+30FB split)
-            "uniFE10",  # ︐
-            "uniFE11",  # ︑
-            "uniFE12",  # ︒
-            "uniFE35",  # ︵
-            "uniFE36",  # ︶
-            "uniFE41",  # ﹁
-            "uniFE42",  # ﹂
-            "uniFF01",  # ！
-            "uniFF05",  # ％
-        }
-
-        assert expected_glyphs <= set(vpal)
+    def test_vertical_tracking_is_normal_only(self):
+        assert NORMAL_VERTICAL_TRACKING == 9
+        assert DISPLAY_VERTICAL_TRACKING == 0
+        assert FAMILIES["normal"]["verticalTracking"] == NORMAL_VERTICAL_TRACKING
+        assert FAMILIES["display"]["verticalTracking"] == DISPLAY_VERTICAL_TRACKING
 
     def _add_vmtx(self, font: TTFont, metrics: dict[str, tuple[int, int]]) -> None:
         vmtx = newTable("vmtx")
@@ -979,6 +950,23 @@ class TestPaltSymbolPolicy:
         assert "uni4E00" in glyphs
         assert "uni3001" in glyphs
         assert "A" not in glyphs
+
+    def test_vertical_tracking_adds_advance_without_moving_origin(self, synthetic_ttf):
+        metrics = {
+            "A": (1000, 90),
+            "uni3042": (1000, 100),
+            "uni4E00": (1000, 120),
+            "uni3001": (1000, 130),
+        }
+        self._add_vmtx(synthetic_ttf, metrics)
+
+        adjusted = _apply_vertical_tracking(synthetic_ttf, tracking=10)
+
+        assert adjusted >= 3
+        assert synthetic_ttf["vmtx"]["uni3042"] == (1010, 100)
+        assert synthetic_ttf["vmtx"]["uni4E00"] == (1010, 120)
+        assert synthetic_ttf["vmtx"]["uni3001"] == (1010, 130)
+        assert synthetic_ttf["vmtx"]["A"] == (1000, 90)
 
     def test_vertical_body_metrics_scale_advance_and_origin(self, synthetic_ttf):
         source = synthetic_ttf

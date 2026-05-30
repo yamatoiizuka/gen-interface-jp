@@ -7,12 +7,12 @@ Shared pipeline per weight:
                                                 metadataMode=inheritBase,
                                                 output.upm=2048)
   2. Convert to proportional metrics           (palt-based, proportional.py)
-  3. Apply tracking                            (LSB +half, RSB +half)
+  3. Apply tracking                            (horizontal hmtx + vertical vmtx)
   4. Merge Inter/InterDisplay + proportional Noto  (font-baker, with
      subFont.excludeCodepoints to keep CJK-conventional symbols on Noto)
 
 Families:
-  - Gen Interface JP         : Inter       + proportional Noto, tracking +30 (kana/punct +45) at 1000 UPM
+  - Gen Interface JP         : Inter       + proportional Noto, tracking +30 (kana/punct +45, vertical JP +10) at 1000 UPM
   - Gen Interface JP Display : InterDisplay + proportional Noto, tracking +0
 
 Outputs TTF into dist/ttf/. Web delivery (subset WOFF2 chunks served via
@@ -39,7 +39,6 @@ from project_metadata import project_version as read_project_version
 from .proportional import (
     _install_ss09_punctuation_feature,
     _read_palt,
-    _read_vpal,
     _remove_prop_features,
     _scale_position_adjustment,
     make_proportional,
@@ -176,24 +175,12 @@ RUNTIME_PALT_BASE_SCALE = 0.34
 # weight, matching the historical Gen Interface JP spacing policy.
 _baseline_palt_cache: dict[str, tuple[int, int]] | None = None
 
-# Vertical yakumono glyphs also live under the ss09 "約物半角" feature. The
-# build uses Noto's vpal records as source data but bakes them into .ss09 vmtx
-# alternates instead of exposing a runtime vpal feature.
-SS09_VERTICAL_FEATURE_CHARS = (
-    "〒", "・",
-    "︐", "︑", "︒", "︗", "︘",
-    "︵", "︶", "︷", "︸", "︹", "︺",
-    "︻", "︼", "︽", "︾", "︿", "﹀",
-    "﹁", "﹂", "﹃", "﹄", "﹇", "﹈",
-    "！", "＃", "＄", "％", "＆", "＊", "？", "￥", "；",
-)
-
-# U+FF1A (：) vertically substitutes to unmapped glyph17071, so codepoint
-# retargeting cannot reach it. U+FF1B (；) has no Noto vpal record.
-SS09_VERTICAL_FEATURE_GLYPHS = ("glyph17071",)
-SS09_SYNTHETIC_VERTICAL_ADJUSTMENTS = {
-    "uniFF1B": (250, -500),
-}
+# Vertical writing is treated as a fallback path for this UI-focused family.
+# Keep it on basic full-width metrics: do not expose Noto vpal/vkrn behavior
+# through runtime features, and do not add vertical ss09 alternates.
+SS09_VERTICAL_FEATURE_CHARS: tuple[str, ...] = ()
+SS09_VERTICAL_FEATURE_GLYPHS: tuple[str, ...] = ()
+SS09_SYNTHETIC_VERTICAL_ADJUSTMENTS: dict[str, tuple[int, int]] = {}
 
 # Glyphs listed here get full Noto palt baked like every other non-optional
 # palt glyph, then receive explicit hmtx spacing after tracking. Keep this
@@ -229,8 +216,10 @@ PALT_SPACE_ADJUSTMENTS = {
 
 NORMAL_TRACKING = 30
 NORMAL_TRACKING_KANA = 45
+NORMAL_VERTICAL_TRACKING = 9
 DISPLAY_TRACKING = 0
 DISPLAY_TRACKING_KANA = 0
+DISPLAY_VERTICAL_TRACKING = 0
 
 NORMAL_PALT_SPACE_ADJUSTMENTS = {
     **PALT_SPACE_ADJUSTMENTS,
@@ -247,6 +236,7 @@ FAMILIES = {
         "interOpsz": 14,
         "tracking": NORMAL_TRACKING,
         "trackingKana": NORMAL_TRACKING_KANA,
+        "verticalTracking": NORMAL_VERTICAL_TRACKING,
         "trackingIgnore": TRACKING_IGNORE_CODEPOINTS,
         "runtimePalt": PALT_FEATURE_CHARS,
         "folderPrefix": "GenInterfaceJP",
@@ -267,6 +257,7 @@ FAMILIES = {
         "interOpsz": 32,
         "tracking": DISPLAY_TRACKING,
         "trackingKana": DISPLAY_TRACKING_KANA,
+        "verticalTracking": DISPLAY_VERTICAL_TRACKING,
         "trackingIgnore": TRACKING_IGNORE_CODEPOINTS,
         "runtimePalt": PALT_FEATURE_CHARS,
         "folderPrefix": "GenInterfaceJPDisplay",
@@ -1027,6 +1018,36 @@ def _scale_vertical_body_metrics_after_merge(
         source_font.close()
 
 
+def _apply_vertical_tracking(
+    font: TTFont,
+    tracking: int,
+    glyph_names: set[str] | None = None,
+) -> int:
+    """Add vertical advance to Japanese body glyphs without moving origins."""
+    if tracking == 0:
+        return 0
+    if "vmtx" not in font:
+        return 0
+
+    glyph_order = set(font.getGlyphOrder())
+    targets = glyph_names if glyph_names is not None else _vertical_body_glyphs(font)
+    adjusted = 0
+    for glyph_name in sorted(targets):
+        if glyph_name not in glyph_order:
+            continue
+        if glyph_name not in font["vmtx"].metrics:
+            continue
+        advance_height, top_side_bearing = font["vmtx"][glyph_name]
+        if advance_height == 0:
+            continue
+        font["vmtx"][glyph_name] = (
+            advance_height + tracking,
+            top_side_bearing,
+        )
+        adjusted += 1
+    return adjusted
+
+
 def _feature_adjustments_for_codepoints(
     font: TTFont,
     codepoint_entries: list | tuple | set | None,
@@ -1144,7 +1165,8 @@ def _refresh_ss09_feature_after_merge(
     codepoint-keyed optional punctuation behavior against the final cmap so
     characters such as U+FF40 (｀), which shares Noto's ``uni2035`` glyph before
     merge, keep their ss09 adjustment on the renamed final glyph. Horizontal
-    palt and vertical vpal are intentionally not reinstalled here.
+    palt is intentionally not reinstalled here. Production builds also pass
+    no vertical adjustments, so vertical ss09 remains disabled.
     """
     font = TTFont(final_path)
     ss09_adjustments = _retarget_feature_adjustments(
@@ -1341,8 +1363,8 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
        passed through font-baker with ``metadataMode: inheritBase`` and
        ``output.upm = 2048`` so the Noto identity records survive into the inst.
     2. **Proportionalise** the inst — read baseline palt from Noto Variable,
-       read vpal from the 2048-UPM baked output, bake those adjustments
-       into hmtx except selected ss09 yakumono, apply tracking,
+       bake those adjustments into hmtx except selected horizontal ss09
+       yakumono, apply tracking,
        apply per-glyph sidebearing tweaks from ``family["glyphSpacing"]``,
        strip extreme bbox glyphs, optionally apply x-scale.
     3. **Merge** the proportional Noto with the matching Inter master via
@@ -1404,6 +1426,8 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
         if tracking_kana_design is None
         else _scale_design_unit(tracking_kana_design, font_upm)
     )
+    vertical_tracking_design = family.get("verticalTracking", 0)
+    vertical_tracking = _scale_design_unit(vertical_tracking_design, font_upm)
     tracking_ignore = family.get("trackingIgnore")
     ss09_punctuation_chars = family.get("runtimePalt")
 
@@ -1415,6 +1439,11 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
         if font_upm != SOURCE_UPM:
             kana_desc += f" ({tracking_kana_design} at {SOURCE_UPM} UPM)"
         desc += f" ({kana_desc})"
+    if vertical_tracking:
+        vertical_desc = f"vertical JP +{vertical_tracking}"
+        if font_upm != SOURCE_UPM:
+            vertical_desc += f" ({vertical_tracking_design} at {SOURCE_UPM} UPM)"
+        desc += f" ({vertical_desc})"
     print(f"    [2/3] Proportional (palt) + {desc}...")
 
     # Split U+30FB from U+2027 before metrics work. Noto maps both to
@@ -1429,19 +1458,6 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
     palt_data = _scale_design_adjustments(dict(_get_baseline_palt()), font_upm)
     if split_source in palt_data:
         palt_data["uni30FB"] = palt_data[split_source]
-    # Read vpal from the freshly baked 2048-UPM inst. font-baker owns the
-    # variable instantiation and UPM conversion here, so vertical records are
-    # already on the active build grid.
-    vpal_data = dict(_read_vpal(font))
-    if split_source in vpal_data:
-        vpal_data["uni30FB"] = vpal_data[split_source]
-    synthetic_vertical_adjustments = _scale_design_adjustments(
-        SS09_SYNTHETIC_VERTICAL_ADJUSTMENTS,
-        font_upm,
-    )
-    for glyph_name, value in synthetic_vertical_adjustments.items():
-        if glyph_name in font.getGlyphOrder() and glyph_name not in vpal_data:
-            vpal_data[glyph_name] = value
     ss09_punctuation_by_codepoint = _runtime_palt_residuals_by_codepoint(
         _feature_adjustments_for_codepoints(
             font,
@@ -1449,16 +1465,6 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
             palt_data,
         )
     )
-    ss09_vertical_by_codepoint = _feature_adjustments_for_codepoints(
-        font,
-        SS09_VERTICAL_FEATURE_CHARS,
-        vpal_data,
-    )
-    ss09_vertical_by_glyph = {
-        glyph_name: vpal_data[glyph_name]
-        for glyph_name in SS09_VERTICAL_FEATURE_GLYPHS
-        if glyph_name in font.getGlyphOrder() and glyph_name in vpal_data
-    }
 
     # Bake Noto palt entries at full strength except ss09 yakumono, which
     # receive a reduced baked base. Their residual is captured above and later
@@ -1478,6 +1484,9 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
     if spacing_adjusted:
         print(f"          Per-glyph spacing: {spacing_adjusted} glyph(s) adjusted")
     _strip_extreme_glyphs(font)
+    vertical_tracking_adjusted = _apply_vertical_tracking(font, vertical_tracking)
+    if vertical_tracking_adjusted:
+        print(f"          Vertical tracking: {vertical_tracking_adjusted} glyph(s) adjusted")
     x_scale = family.get("xScale", 1.0)
     if x_scale != 1.0:
         _apply_x_scale(font, x_scale)
@@ -1530,8 +1539,8 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
     _refresh_ss09_feature_after_merge(
         final_path,
         _scale_feature_adjustments(ss09_punctuation_by_codepoint, SCALE),
-        _scale_feature_adjustments(ss09_vertical_by_codepoint, SCALE),
-        _scale_feature_adjustments(ss09_vertical_by_glyph, SCALE),
+        {},
+        {},
     )
     return {
         "fontPath": final_path,

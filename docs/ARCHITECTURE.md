@@ -26,7 +26,7 @@ consumes the published webfont package.
         │             ↓                                   │
         │   [2/3] Proportionalise — proportional.py       │
         │      palt → hmtx + yakumono ss09                │
-        │         tracking (with repeatable skips)        │
+        │         tracking (hmtx + normal-family vmtx)    │
         │         + strip extreme bbox                    │
         │             ↓                                   │
         │   [3/3] Merge — font-baker                      │
@@ -80,15 +80,17 @@ For each (family, weight) in FAMILIES × WEIGHTS:
                     inheritBase passes designer/OFL/version
                     through; only weight is stamped
   → reload inst, read baseline palt from Noto Variable and scale it to the
-    active 2048-UPM build grid; read vpal from font-baker's baked output
+    active 2048-UPM build grid
   → bake Noto palt at full strength except ss09 yakumono,
     whose palt is split into a 34% baked base + 66% ss09 residual
     (glyphs without palt keep metrics)
-  → make_proportional bakes palt → hmtx and removes palt/vpal/halt/vhal;
-    horizontal palt residuals and vertical vpal records are held for
-    final ss09 alternates
+  → make_proportional bakes palt → hmtx and removes palt/vpal/halt/vhal/vkrn;
+    horizontal palt residuals are held for final ss09 alternates while
+    vertical vpal/vkrn behavior is not exposed
   → _apply_tracking widens advances + half-balances LSB
     except repeatable no-gap symbols in family["trackingIgnore"]
+  → normal-family vertical tracking adds +9 design units to Japanese
+    vmtx advances before the Inter merge; Display stays at +0
   → _apply_glyph_spacing applies family["glyphSpacing"] sidebearing tweaks
   → _strip_extreme_glyphs neutralises vertical iteration marks 〱-〵
     (1000-UPM design thresholds: yMax > 1200 / yMin < -400)
@@ -104,9 +106,9 @@ For each (family, weight) in FAMILIES × WEIGHTS:
                      manufacturer / manufacturerURL stamped
   → reload/save final TTF once so GSUB/GPOS coverage tables are ordered
     by the final merged glyph IDs
-  → install yakumono-only ss09 against the final cmap / glyph names so
-    merge-time glyph renames keep optional yakumono behavior on both
-    horizontal and vertical glyphs
+  → install horizontal yakumono-only ss09 against the final cmap / glyph names
+    so merge-time glyph renames keep optional horizontal yakumono behavior;
+    vertical writing remains a basic full-width fallback
 ```
 
 `font.build --jobs N` dispatches independent family/weight jobs in parallel.
@@ -181,17 +183,17 @@ Four sub-passes, all in-place on the inst:
    `XAdvance=-500` yakumono records at the 1000-UPM source scale, the
    equivalent 2048-UPM record is `-1024`; palt-off gets `-348` baked into
    the base advance and enabling `ss09` applies the remaining `-676`.
-   Runtime `vpal` is not reinstalled as a feature; its
-   selected yakumono records are kept as source data for vertical `.ss09`
-   alternates whose `vmtx` carries the vertical placement / advance delta.
-   Final fonts strip `palt`, `vpal`, `halt`, and `vhal` so optional yakumono
-   spacing is exposed through `ss09` only. Glyphs without palt entries are not
+   Runtime `vpal` is not reinstalled, vertical `vkrn` is stripped, and
+   production builds do not create vertical `.ss09` alternates. Vertical
+   writing is treated as a fallback path that should keep basic full-width
+   rhythm. Final fonts strip `palt`, `vpal`, `halt`, `vhal`, and `vkrn` so
+   optional yakumono spacing is exposed through horizontal `ss09` only. Glyphs without palt entries are not
    automatically sidebearing-squeezed; they keep their original
    `hmtx` unless a later explicit spacing rule touches them.
    `U+30FB` (・) is split from Noto's shared `uni2027` glyph before palt
    baking so `U+2027` (‧) and `U+30FB` (・) can carry separate optional
    spacing records when needed.
-2. **Tracking** (`_apply_tracking`) — advance grows by `tracking`;
+2. **Tracking** (`_apply_tracking`, `_apply_vertical_tracking`) — advance grows by `tracking`;
    `tracking // 2` is added to LSB so the outline sits centred in the
    wider slot. Kana / punctuation get a separate `trackingKana` value
    when set on the family. These constants are authored on the 1000-UPM
@@ -222,6 +224,11 @@ Four sub-passes, all in-place on the inst:
    including `U+30FB` (・), is intentionally not handled here: it passes
    through tracking and tightens only when the explicit `ss09` feature is
    enabled.
+   The normal family also applies `verticalTracking = 9` design units to
+   Japanese vertical-body glyphs on the pre-merge Noto intermediate. This
+   updates only `vmtx.advanceHeight`; top sidebearing / vertical origin stay
+   unchanged so the vertical display box is preserved while vertical text gets
+   a slightly looser rhythm. The Display family keeps `verticalTracking = 0`.
 4. **Bbox strip** (`_strip_extreme_glyphs`) — see [Vertical metrics]
    below.
 
@@ -256,7 +263,8 @@ Noto-source `vmtx` advance heights are scaled by `SCALE`, and top sidebearings
 are derived from the pre-merge vertical origin after applying the same
 baseline-based transform (`originY * SCALE + BASELINE_OFFSET`). This keeps the
 vertical writing body from staying at the original 2048-square while the
-outline has been optically scaled down. ASCII Latin keeps its original vertical
+outline has been optically scaled down. Any pre-merge vertical tracking already
+present in the source `vmtx` advance is carried through this same scale. ASCII Latin keeps its original vertical
 metrics; kana, CJK, fullwidth forms, Japanese punctuation, and vertical-form
 alternates follow the Noto scale. If font-baker renamed a Noto/base glyph
 during merge, the metric pass resolves the source glyph through the shared
@@ -273,8 +281,7 @@ prefix. `output.manufacturer = "Yamato Iizuka"`, `output.manufacturerURL =
 After the merge, the TTF is reloaded and saved once with fontTools so
 GSUB/GPOS coverage tables are sorted against the final merged glyph order.
 Then the minimal runtime `ss09` behavior is rebuilt from codepoint-keyed
-horizontal records and codepoint/glyph-keyed vertical records captured before
-the merge. This matters
+horizontal records captured before the merge. This matters
 for shared Noto glyphs such as `U+FF40` (｀), which uses Noto's `uni2035`
 before merge but may be renamed to `uni2035.orig` when Inter also provides
 `U+2035`. Because this final install happens after the merge, the saved
@@ -302,19 +309,17 @@ Inter merge. The project uses
 tightened (`-348` for the common `-1024` palt advance on the 2048-UPM build
 grid) while enabling `ss09` reaches the former full Noto palt target.
 The production build uses `PALT_FEATURE_CHARS` (48 chars) for horizontal
-`ss09` targets and `SS09_VERTICAL_FEATURE_CHARS` plus
-`SS09_VERTICAL_FEATURE_GLYPHS` for vertical `ss09` targets. The latter uses
-Noto's `vpal` values as source data but bakes them into alternate glyph
-metrics instead of exposing a runtime `vpal` feature. This avoids
-double-applying palt to baked kana / Latin while consolidating optional
-yakumono spacing under `ss09`. Only TrueType outlines are supported
+`ss09` targets. Vertical `ss09` targets are intentionally empty
+(`SS09_VERTICAL_FEATURE_CHARS = ()`, `SS09_VERTICAL_FEATURE_GLYPHS = ()`),
+and Noto `vpal` / `vkrn` behavior is not carried into the final runtime
+surface. This avoids double-applying palt to baked kana / Latin while keeping
+optional yakumono spacing under horizontal `ss09`. Only TrueType outlines are supported
 — palt baking writes back to `glyf`, not CFF.
 Because the Inter merge can rename colliding base glyphs, the build captures
-horizontal residuals by codepoint and vertical adjustments by codepoint or
-glyph name before the merge, then retargets them against the final cmap /
-glyph order afterward. Those final records are scaled by the final Noto
+horizontal residuals by codepoint before the merge, then retargets them
+against the final cmap / glyph order afterward. Those final records are scaled by the final Noto
 optical scale (`SCALE = 0.925`) at install time only; the pre-merge
-`palt_data` / `vpal_data` remain on the active UPM grid so baked base metrics
+`palt_data` remains on the active UPM grid so baked base metrics
 are scaled exactly once by the merge.
 
 `_remove_prop_features` walks GPOS in two coordinated passes:
@@ -322,16 +327,17 @@ FeatureRecord deletions and the corresponding LangSys index remap.
 Removing a record changes the indices of every later record, so each
 LangSys's `FeatureIndex` array is re-keyed against the surviving records.
 After feature removal, lookup indices are pruned only when no surviving
-feature references them; shared lookups stay intact. `kern` remains in GPOS,
-and horizontal optional yakumono is
+feature references them; shared lookups stay intact. Horizontal `kern`
+remains in GPOS, while `vkrn` is removed so vertical writing stays on the
+basic body grid. Horizontal optional yakumono is
 handled as GSUB: `_install_ss09_punctuation_feature` creates `.ss09` metric
 alternates from the former palt residual and installs an `ss09` stylistic set
-with the UI name "約物半角". For vertical glyphs, it creates `.ss09`
-alternates whose `vmtx` bakes the former vpal YPlacement/YAdvance. Existing
-PairPos kerning is extended to those alternates so `kern` continues to apply
-after substitution. Horizontal-only alternates copy their source glyphs'
-`vmtx` records so saved fonts keep vertical metrics table length in sync with
-the expanded glyph order. After `ss09` is
+with the UI name "約物半角". Existing horizontal PairPos kerning is extended
+to those alternates so `kern` continues to apply after substitution.
+Horizontal-only alternates copy their source glyphs' `vmtx` records so saved
+fonts keep vertical metrics table length in sync with the expanded glyph
+order. Production builds pass no vertical adjustments to this helper, so
+`ss09` has no vertical-writing effect. After `ss09` is
 appended, the GSUB `FeatureList` is sorted back into `FeatureTag` order and
 all LangSys feature indices are remapped; lookup order is left untouched.
 
@@ -497,9 +503,9 @@ Tests live under `tests/`, split by surface:
   (`SOURCE_UPM = 1000`, `TARGET_UPM = 2048`), `_glyph_codepoint`, `_is_kana_or_punct`,
   `_is_cjk_codepoint`, `_is_kana_letter`, `_get_cjk_glyphs`,
   `_get_vert_alternates`, `_apply_x_scale`, `_strip_extreme_glyphs`,
-  `_apply_tracking`, `_apply_glyph_spacing`, `_glyphs_for_codepoints`,
-  `_split_cmap_codepoint_glyph`, explicit palt/ss09 spacing policy, vendor
-  palt/vpal policy checks, and InterVariable edge-instance
+  `_apply_tracking`, `_apply_vertical_tracking`, `_apply_glyph_spacing`, `_glyphs_for_codepoints`,
+  `_split_cmap_codepoint_glyph`, explicit palt/ss09 spacing policy, vertical
+  ss09-disabled policy checks, and InterVariable edge-instance
   source selection for Thin / ExtraBold.
 - **`src/font/verify_edge_instances.py`** — post-build verification for
   Thin / ExtraBold edge outputs. Confirms the generated InterVariable static
@@ -524,8 +530,8 @@ Tests live under `tests/`, split by surface:
 
 | File | Tests | Verifies |
 |---|---|---|
-| `test_font_build.py` | 113 | CLI build selection and parallel intermediate path separation, Japanese vertical body scaling, UPM scaling policy, project-version metadata forwarding, glyph-name parsing, kana / CJK classification, GSUB/GPOS walk, baseline palt policy, x-scale, bbox strip, tracking, ss09 feature retargeting, final runtime feature scaling, InterVariable edge-instance compatibility |
-| `test_proportional.py` | 37 | palt/vpal extraction, cumulative SinglePos lookup reading, glyph translation, GPOS feature removal, runtime-palt/vpal helper coverage + base/residual split + optional squeeze helper, ss09 construction + shaping |
+| `test_font_build.py` | 115 | CLI build selection and parallel intermediate path separation, Japanese vertical body scaling/tracking, UPM scaling policy, project-version metadata forwarding, glyph-name parsing, kana / CJK classification, GSUB/GPOS walk, baseline palt policy, x-scale, bbox strip, tracking, ss09 feature retargeting, final runtime feature scaling, InterVariable edge-instance compatibility |
+| `test_proportional.py` | 39 | palt/vpal extraction, cumulative SinglePos lookup reading, glyph translation, GPOS feature removal including vkrn, runtime-palt/vpal helper coverage + base/residual split + optional squeeze helper, ss09 construction + shaping including vertical no-op coverage |
 | `test_release.py` | 2 | GitHub asset URL contract, npm package layout (files glob, license, README, self-host/CDN CSS entrypoints at root) |
 | `test_webfont_build.py` | 42 | Range merge / dedup, unicode-range formatting incl. 5-digit, JIS row mapping, subset plan placement / non-overlap / coverage, strategy parser edge cases |
 
