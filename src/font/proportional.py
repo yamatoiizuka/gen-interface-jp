@@ -30,14 +30,18 @@ from fontTools.ttLib import TTFont, newTable
 from fontTools.ttLib.tables import otTables
 
 
-# GPOS features that provide proportional metric adjustments.
-# These become redundant once the font itself is proportional, so we strip
-# them to keep apps from double-applying the shrink.
+# GPOS features that provide proportional metric adjustments or vertical
+# pair tightening. These become redundant or undesirable once the font's
+# project-owned spacing policy has been baked, so we strip them to keep apps
+# from double-applying the shrink and to keep vertical writing on a basic
+# full-width grid.
 #   palt  - proportional alternate widths (horizontal)
 #   vpal  - proportional alternate widths (vertical)
 #   halt  - alternate metrics (horizontal, ½-width / pseudo-half)
 #   vhal  - alternate metrics (vertical)
-PROP_FEATURES = {"palt", "vpal", "halt", "vhal"}
+#   vkrn  - vertical kerning; disabled for Gen Interface JP's fallback
+#           vertical writing behavior
+PROP_FEATURES = {"palt", "vpal", "halt", "vhal", "vkrn"}
 
 SS09_FEATURE_TAG = "ss09"
 SS09_ALTERNATE_SUFFIX = ".ss09"
@@ -216,8 +220,9 @@ def make_proportional(
             new_aw = aw - lsb_remove - rsb_remove
             hmtx[glyph_name] = (new_aw, new_lsb)
 
-    # Remove proportional-metric GPOS features, then install minimal live
-    # palt/vpal lookups for glyphs intentionally kept at runtime.
+    # Remove proportional-metric GPOS features plus vertical kerning, then
+    # install minimal live palt/vpal lookups for glyphs intentionally kept at
+    # runtime.
     _remove_prop_features(font)
     if install_runtime_palt and runtime_palt_adjustments:
         _install_palt_feature(font, runtime_palt_adjustments)
@@ -352,7 +357,7 @@ def _shift_glyph_x(glyph, dx: int) -> None:
 # ---------------------------------------------------------------------------
 
 def _remove_prop_features(font: TTFont) -> None:
-    """Strip palt/vpal/halt/vhal from GPOS, keeping every other feature intact.
+    """Strip palt/vpal/halt/vhal/vkrn from GPOS, keeping other features intact.
 
     GPOS feature indices live in two places that must stay in sync:
     the FeatureRecord list itself (the data) and the FeatureIndex arrays
@@ -503,10 +508,13 @@ def _install_ss09_punctuation_feature(
 
     The default glyphs keep the reduced baked metrics. ``ss09`` substitutes
     to private alternate glyphs that carry the remaining palt delta in their
-    outline position and hmtx advance. In vertical writing, the same feature
-    substitutes vertical-form glyphs to alternates whose vmtx carries the
-    former vpal delta. PairPos kerning is extended to those alternates so
-    enabling ``ss09`` does not drop existing ``kern`` pairs.
+    outline position and hmtx advance. When vertical adjustments are supplied,
+    the same helper can create vertical-form alternates whose vmtx carries a
+    vertical metric delta. The production build intentionally passes none so
+    vertical writing stays on basic full-width metrics.
+
+    PairPos kerning is extended to alternates so enabling ``ss09`` does not
+    drop existing horizontal ``kern`` pairs.
     """
     alternates = _create_metric_alternates(font, adjustments)
     alternates.update(
