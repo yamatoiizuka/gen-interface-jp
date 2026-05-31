@@ -305,7 +305,7 @@ h2 {
   /* Liquid label, fixed group: extra horizontal space goes into the label
      column so the JP+Latin pair stays anchored to a 770-wide visual block
      (matching Variations' content side). */
-  grid-template-columns: 1fr 48.25rem; /* 770 */
+  grid-template-columns: 1fr 49rem; /* 770 */
   align-items: center;
   row-gap: 1.25rem; /* 20 */
 }
@@ -544,7 +544,7 @@ h2 {
 /* 8 Weights */
 
 .weights-grid {
-  width: 48.25rem; /* 770 */
+  width: 49rem; /* 770 */
   flex-shrink: 0;
   display: grid;
   grid-template-columns: repeat(4, 1fr);
@@ -576,7 +576,7 @@ h2 {
 
 /* Copy row: JP/EN sit side-by-side at the right column's 770 width. */
 .webfont__copy {
-  width: 48.25rem; /* 770 — preferred, but shrinks with viewport */
+  width: 49rem; /* 770 — preferred, but shrinks with viewport */
   max-width: 100%;
   min-width: 0;
   flex-shrink: 1;
@@ -620,7 +620,7 @@ h2 {
 }
 
 .webfont__code {
-  width: 48.25rem; /* 770 — matches the copy row above */
+  width: 49rem; /* 770 — matches the copy row above */
   max-width: 100%;
   min-width: 0;
   flex-shrink: 1;
@@ -715,7 +715,7 @@ h2 {
 /* Bitmap Compatibility */
 
 .bitmap-sample {
-  width: 48.25rem; /* 770 — preferred, but shrinks with viewport */
+  width: 49rem; /* 770 — preferred, but shrinks with viewport */
   max-width: 100%;
   min-width: 0;
   display: flex;
@@ -1022,7 +1022,7 @@ h2 {
 /* === Type Tester rows =============================================== */
 
 .tester__rows {
-  width: 48.25rem; /* 770 */
+  width: 49rem; /* 770 */
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
@@ -1092,7 +1092,7 @@ h2 {
 /* === Reading body =============================================== */
 
 .reading__rows {
-  width: 48.25rem; /* 770 */
+  width: 49rem; /* 770 */
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
@@ -1265,7 +1265,7 @@ h2 {
 }
 
 .license {
-  width: 48.25rem; /* 777 */
+  width: 49rem; /* 777 */
   max-width: 100%;
   font-size: 2.25rem; /* 36 */
   line-height: 1.5; /* 54/36 */
