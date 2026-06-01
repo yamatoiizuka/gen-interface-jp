@@ -562,7 +562,7 @@ flow.
 
 ### Python
 
-- `ofl-font-baker` (>= 0.4.6) — Composite font merge engine. Inherits
+- `ofl-font-baker` (>= 0.4.7) — Composite font merge engine. Inherits
   base/sub identity records via `metadataMode`. Drives Stage 1 (bake)
   and Stage 3 (merge) of the build pipeline. 0.4.0 added
   `subFont.excludeCodepoints` and glyph-name collision rename, used by
@@ -574,7 +574,9 @@ flow.
   the Noto bake and final merge stages to keep the pipeline on the 2048 UPM
   Inter grid. 0.4.6 scales layout tables when `output.upm` is applied, so
   the proportional and vertical positioning data consumed by this pipeline
-  stays on the active build grid.
+  stays on the active build grid. 0.4.7 omits empty optional name records,
+  avoiding macOS Font Book warnings for blank designer / designer URL
+  metadata.
 - `fonttools` (>= 4.47.0) — Font parsing, instancer, subsetter, GPOS / GSUB
   table editing.
 - `freetype-py` — Used by tooling around metrics inspection.

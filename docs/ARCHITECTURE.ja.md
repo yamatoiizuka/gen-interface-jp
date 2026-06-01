@@ -552,7 +552,7 @@ GitHub Pages にデプロイ。リリースパッケージングはローカル�
 
 ### Python
 
-- `ofl-font-baker` (>= 0.4.6) — コンポジットフォントマージエンジン。
+- `ofl-font-baker` (>= 0.4.7) — コンポジットフォントマージエンジン。
   `metadataMode` で base / sub の identity を継承する。Stage 1 (bake) と
   Stage 3 (merge) を駆動。0.4.0 で `subFont.excludeCodepoints` と
   glyph-name collision rename が追加され、merge 段で日本語慣習記号を
@@ -563,6 +563,8 @@ GitHub Pages にデプロイ。リリースパッケージングはローカル�
   の両段で 2048 UPM の Inter グリッドを維持するために使っている。0.4.6 で
   `output.upm` 適用時の layout table もスケールされるため、この pipeline が
   読むプロポーショナル / 縦書き位置データも active build grid 上に揃う。
+  0.4.7 で空の optional name record を出力しないようになり、空の designer /
+  designer URL metadata による macOS Font Book の警告を避けられる。
 - `fonttools` (>= 4.47.0) — フォントパース、instancer、subsetter、
   GPOS / GSUB の編集。
 - `freetype-py` — メトリクス検証ツーリングで使用。
