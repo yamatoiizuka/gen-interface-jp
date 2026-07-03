@@ -625,20 +625,6 @@ def _is_cjk_codepoint(cp: int) -> bool:
     )
 
 
-def _get_cjk_glyphs(font: TTFont) -> set[str]:
-    """Resolve CJK ideograph glyph names through the font's cmap.
-
-    cmap-driven lookup (rather than glyph-name parsing) catches ideographs
-    whose names don't follow ``uniXXXX`` — Noto ships some Han glyphs as
-    ``cidNNNNN`` or post-substitution names that wouldn't match a
-    ``uni``-prefix check.
-    """
-    cmap = font.getBestCmap()
-    if cmap is None:
-        return set()
-    return {gname for cp, gname in cmap.items() if _is_cjk_codepoint(cp)}
-
-
 def _split_cmap_codepoint_glyph(
     font: TTFont,
     codepoint: int,
@@ -671,26 +657,6 @@ def _split_cmap_codepoint_glyph(
             table.cmap[codepoint] = new_glyph_name
 
     return source_glyph
-
-
-def _is_kana_letter(glyph_name: str) -> bool:
-    """Return True for hiragana / katakana *letters*, excluding punctuation.
-
-    Stricter than :func:`_is_kana_or_punct`: this helper answers whether a
-    glyph is an actual kana letter rather than CJK punctuation or fullwidth
-    symbols.
-    Notable exclusion: U+30FB (・) is punctuation, not a letter.
-    """
-    cp = _glyph_codepoint(glyph_name)
-    if cp is None:
-        return False
-    return (
-        0x3041 <= cp <= 0x3096    # Hiragana letters (ぁ-ゖ)
-        or 0x3099 <= cp <= 0x309F  # Hiragana combining/iteration marks
-        or 0x30A1 <= cp <= 0x30FA  # Katakana letters (ァ-ヺ), excludes ・(30FB)
-        or 0x30FC <= cp <= 0x30FF  # Katakana prolonged sound / iteration marks
-        or 0x31F0 <= cp <= 0x31FF  # Katakana Phonetic Extensions
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -889,7 +855,12 @@ def _glyphs_for_codepoints(
     font: TTFont,
     codepoint_entries: list | tuple | set | None,
 ) -> set[str]:
-    """Resolve codepoint / single-character entries to glyph names via cmap."""
+    """Resolve codepoint / single-character entries to glyph names via cmap.
+
+    Used for user-facing codepoint policies such as runtime palt targets and
+    tracking-ignore ranges. cmap resolution is the correct source of truth
+    for those policies rather than glyph-name parsing.
+    """
     codepoints = _codepoints_for_entries(codepoint_entries)
     cmap = font.getBestCmap() or {}
     return {glyph_name for cp, glyph_name in cmap.items() if cp in codepoints}
@@ -1236,19 +1207,6 @@ def _refresh_ss09_feature_after_merge(
     font.save(final_path)
 
 
-def _tracking_ignore_glyphs(
-    font: TTFont,
-    tracking_ignore: list | tuple | set | None,
-) -> set[str]:
-    """Resolve tracking-ignore codepoints to glyph names via cmap.
-
-    Ignore rules are a user-facing codepoint policy (ranges like box drawing
-    and leaders), so cmap resolution is the correct source of truth rather
-    than glyph-name parsing.
-    """
-    return _glyphs_for_codepoints(font, tracking_ignore)
-
-
 def _apply_tracking(
     font: TTFont,
     tracking: int,
@@ -1285,7 +1243,7 @@ def _apply_tracking(
     glyph.
     """
     hmtx = font["hmtx"]
-    ignore_glyphs = _tracking_ignore_glyphs(font, tracking_ignore)
+    ignore_glyphs = _glyphs_for_codepoints(font, tracking_ignore)
     reverse_cmap = _reverse_cmap(font)
     for glyph_name in font.getGlyphOrder():
         aw, lsb = hmtx[glyph_name]

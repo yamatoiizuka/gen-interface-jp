@@ -20,7 +20,6 @@ mutate without poisoning the shared state.
 
 import copy
 import io
-import os
 from pathlib import Path
 
 import pytest
@@ -54,7 +53,7 @@ _TEST_CODEPOINTS = [
     0x3038,                   # 〸 CJK numerals (range 3038..303B)
     0x3042, 0x304B,           # あ か (hiragana letters)
     0x30A2, 0x30AB,           # ア カ (katakana letters)
-    0x30FB,                   # ・ middle dot (katakana-block punct, excluded from _is_kana_letter)
+    0x30FB,                   # ・ middle dot (katakana-block punctuation)
     0x4E00, 0x6F22,           # 一 漢 (CJK ideographs)
     0xFF21,                   # Ａ fullwidth A
 ]

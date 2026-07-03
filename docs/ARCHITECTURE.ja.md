@@ -219,6 +219,9 @@ inst に対して 4 つのサブパスを in-place で実行:
    `U+FE49-U+FE4F`)、two-/three-em dash (`U+2E3A`, `U+2E3B`)、全角
    low line (`U+FF3F`)、全角 macron (`U+FFE3`) を除外し、隙間なしで
    反復される記号のリズムを保つ。
+   ユーザー向けコードポイント方針から glyph 名が必要な場合は、`uniXXXX`
+   glyph 名 parse を信用せず cmap で解決する。Noto の Han glyph には
+   `cidNNNNN` や post-substitution 名が含まれるため。
 3. **個別グリフのスペーシング** (`_apply_glyph_spacing`) — palt + 一律
    トラッキングだけでは追い込めない稀なグリフのための手動レイヤー。
    ファミリー設定の `glyphSpacing` がコードポイント (または 1 文字) を
@@ -512,8 +515,7 @@ PYTHONPATH=src python3 -m pytest        # 全テスト (~35 秒)
   forwarding
   (`SOURCE_UPM = 1000`, `TARGET_UPM = 2048`)、`_glyph_codepoint`, `_reverse_cmap`,
   `_is_kana_or_punct`, `_is_kana_or_punct_codepoint`,
-  `_is_cjk_codepoint`, `_is_kana_letter`, `_get_cjk_glyphs`,
-  `_get_vert_alternates`, `_apply_x_scale`, `_strip_extreme_glyphs`,
+  `_is_cjk_codepoint`, `_get_vert_alternates`, `_apply_x_scale`, `_strip_extreme_glyphs`,
   `_apply_tracking`, `_apply_vertical_tracking`, `_apply_glyph_spacing`, `_glyphs_for_codepoints`,
   `_split_cmap_codepoint_glyph`、明示的な palt/ss09 spacing 方針、
   縦方向 ss09 無効化ポリシーの確認、final TTF integrity validation、
@@ -541,7 +543,7 @@ PYTHONPATH=src python3 -m pytest        # 全テスト (~35 秒)
 
 | ファイル | テスト数 | 検証内容 |
 |---|---|---|
-| `test_font_build.py` | 126 | CLI build selection / parallel intermediate path separation、和文 vertical body scaling/tracking、UPM 換算ポリシー、project-version metadata forwarding、グリフ名パース、reverse-cmap kana / 句読点分類、CJK 分類、GSUB/GPOS 走査、baseline palt 方針、x-scale、bbox 除去、tracking、final TTF integrity validation、ss09 feature の retarget、final runtime feature scaling、InterVariable edge instance 互換性 |
+| `test_font_build.py` | 114 | CLI build selection / parallel intermediate path separation、和文 vertical body scaling/tracking、UPM 換算ポリシー、project-version metadata forwarding、グリフ名パース、reverse-cmap kana / 句読点分類、CJK 分類、GSUB/GPOS 走査、baseline palt 方針、x-scale、bbox 除去、tracking、final TTF integrity validation、ss09 feature の retarget、final runtime feature scaling、InterVariable edge instance 互換性 |
 | `test_proportional.py` | 39 | palt/vpal 抽出、SinglePos lookup の加算読み取り、グリフ平行移動、vkrn を含む GPOS feature 削除、runtime-palt/vpal helper coverage + base/residual 分割 + optional squeeze helper、ss09 生成 + 縦方向 no-op を含む shaping |
 | `test_release.py` | 2 | GitHub アセット URL 契約、npm パッケージレイアウト (files glob、license、README、self-host/CDN CSS root 配置) |
 | `test_webfont_build.py` | 42 | 範囲マージ / 重複除去、5 桁 hex 含む unicode-range、JIS 区マッピング、サブセット計画の配置 / 非重複 / 完全カバレッジ、ストラテジーパーサーのエッジケース |

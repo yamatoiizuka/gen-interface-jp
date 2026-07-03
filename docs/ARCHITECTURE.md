@@ -220,6 +220,9 @@ Four sub-passes, all in-place on the inst:
    forms (`U+FE19`, `U+FE30-U+FE34`, `U+FE49-U+FE4F`), two-/three-em
    dashes (`U+2E3A`, `U+2E3B`), fullwidth low line (`U+FF3F`), and
    fullwidth macron (`U+FFE3`).
+   Any build policy that needs glyph names from user-facing codepoints
+   resolves through cmap rather than trusting `uniXXXX` glyph-name parsing:
+   Noto can ship Han glyphs as `cidNNNNN` or post-substitution names.
 3. **Per-glyph spacing** (`_apply_glyph_spacing`) — manual fallback for
    the rare glyph whose sidebearings still read off after palt + uniform
    tracking. The family's `glyphSpacing` dict maps a codepoint or
@@ -521,8 +524,7 @@ Tests live under `tests/`, split by surface:
   metadata forwarding
   (`SOURCE_UPM = 1000`, `TARGET_UPM = 2048`), `_glyph_codepoint`, `_reverse_cmap`,
   `_is_kana_or_punct`, `_is_kana_or_punct_codepoint`,
-  `_is_cjk_codepoint`, `_is_kana_letter`, `_get_cjk_glyphs`,
-  `_get_vert_alternates`, `_apply_x_scale`, `_strip_extreme_glyphs`,
+  `_is_cjk_codepoint`, `_get_vert_alternates`, `_apply_x_scale`, `_strip_extreme_glyphs`,
   `_apply_tracking`, `_apply_vertical_tracking`, `_apply_glyph_spacing`, `_glyphs_for_codepoints`,
   `_split_cmap_codepoint_glyph`, explicit palt/ss09 spacing policy, vertical
   ss09-disabled policy checks, final TTF integrity validation, and
@@ -550,7 +552,7 @@ Tests live under `tests/`, split by surface:
 
 | File | Tests | Verifies |
 |---|---|---|
-| `test_font_build.py` | 126 | CLI build selection and parallel intermediate path separation, Japanese vertical body scaling/tracking, UPM scaling policy, project-version metadata forwarding, glyph-name parsing, reverse-cmap kana / punctuation classification, CJK classification, GSUB/GPOS walk, baseline palt policy, x-scale, bbox strip, tracking, final TTF integrity validation, ss09 feature retargeting, final runtime feature scaling, InterVariable edge-instance compatibility |
+| `test_font_build.py` | 114 | CLI build selection and parallel intermediate path separation, Japanese vertical body scaling/tracking, UPM scaling policy, project-version metadata forwarding, glyph-name parsing, reverse-cmap kana / punctuation classification, CJK classification, GSUB/GPOS walk, baseline palt policy, x-scale, bbox strip, tracking, final TTF integrity validation, ss09 feature retargeting, final runtime feature scaling, InterVariable edge-instance compatibility |
 | `test_proportional.py` | 39 | palt/vpal extraction, cumulative SinglePos lookup reading, glyph translation, GPOS feature removal including vkrn, runtime-palt/vpal helper coverage + base/residual split + optional squeeze helper, ss09 construction + shaping including vertical no-op coverage |
 | `test_release.py` | 2 | GitHub asset URL contract, npm package layout (files glob, license, README, self-host/CDN CSS entrypoints at root) |
 | `test_webfont_build.py` | 42 | Range merge / dedup, unicode-range formatting incl. 5-digit, JIS row mapping, subset plan placement / non-overlap / coverage, strategy parser edge cases |
