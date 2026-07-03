@@ -8,6 +8,10 @@ needed by the page text.
 The subset definition files written to ``nam/`` intentionally use the same
 machine-readable style as googlefonts/nam-files: one ``0x...`` codepoint per
 line, with comments allowed.
+
+Subsetting is deliberately cmap/codepoint-driven: unicode-range is a
+user-facing character policy, and fontTools.subset performs the layout closure
+needed to keep referenced glyphs reachable inside each WOFF2.
 """
 
 from __future__ import annotations
@@ -162,7 +166,7 @@ def _chunk_evenly(values: list[int], chunks: int) -> list[list[int]]:
 
 
 def build_subset_plan(font_codepoints: Iterable[int], extra_han_slices: int = 24) -> list[WebFontSubset]:
-    """Build non-overlapping subsets from the font cmap."""
+    """Build non-overlapping unicode-range subsets from the font cmap."""
     supported = set(font_codepoints)
     assigned: set[int] = set()
     subsets: list[WebFontSubset] = []
