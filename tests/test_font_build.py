@@ -25,14 +25,12 @@ from font.build import (
     _feature_adjustments_for_codepoints,
     _final_ttf_path,
     _final_output_metadata,
-    _get_cjk_glyphs,
     _get_vert_alternates,
     _get_baseline_palt,
     _glyphs_for_codepoints,
     _glyph_codepoint,
     _intermediate_paths,
     _is_cjk_codepoint,
-    _is_kana_letter,
     _is_kana_or_punct,
     _is_kana_or_punct_codepoint,
     _parallel_task_command,
@@ -483,87 +481,6 @@ class TestIsCjkCodepoint:
         # only the narrow CJK numeral / ideograph-symbol slices are CJK.
         assert not _is_cjk_codepoint(0x3001)  # 、
         assert not _is_cjk_codepoint(0x3000)  # ideographic space
-
-
-# ---------------------------------------------------------------------------
-# _is_kana_letter
-# ---------------------------------------------------------------------------
-
-class TestIsKanaLetter:
-    """Kana *letter* classification — strict subset of _is_kana_or_punct."""
-
-    def test_hiragana_letters(self):
-        assert _is_kana_letter("uni3042")  # あ
-        assert _is_kana_letter("uni3093")  # ん
-
-    def test_katakana_letters(self):
-        assert _is_kana_letter("uni30A2")  # ア
-        assert _is_kana_letter("uni30F3")  # ン
-
-    def test_hiragana_iteration_marks_included(self):
-        # ゛ ゜ ゝ ゞ ゟ (U+309B-309F) — hiragana combining / iteration block,
-        # treated as letter-class.
-        assert _is_kana_letter("uni309D")  # ゝ
-        assert _is_kana_letter("uni309E")  # ゞ
-
-    def test_cjk_block_iteration_marks_excluded(self):
-        # 〱 〲 (U+3031, U+3032) live in the CJK Symbols & Punctuation
-        # block, not the kana blocks — _is_kana_letter excludes them so
-        # they do not receive full kana palt treatment.
-        assert not _is_kana_letter("uni3031")
-        assert not _is_kana_letter("uni3032")
-
-    def test_middle_dot_excluded(self):
-        # ・ (U+30FB) is in the katakana block but counts as punctuation,
-        # not a letter — it should NOT receive full kana palt.
-        assert not _is_kana_letter("uni30FB")
-
-    def test_cjk_punct_excluded(self):
-        assert not _is_kana_letter("uni3001")  # 、
-        assert not _is_kana_letter("uni3000")  # ideographic space
-
-    def test_latin_excluded(self):
-        assert not _is_kana_letter("A")
-        assert not _is_kana_letter("uni0041")
-
-    def test_cjk_ideograph_excluded(self):
-        assert not _is_kana_letter("uni4E00")
-
-
-# ---------------------------------------------------------------------------
-# _get_cjk_glyphs
-# ---------------------------------------------------------------------------
-
-class TestGetCjkGlyphs:
-    """cmap-based CJK glyph lookup."""
-
-    def test_returns_ideograph_glyphs(self, noto_subset):
-        cjk_glyphs = _get_cjk_glyphs(noto_subset)
-        cmap = noto_subset.getBestCmap()
-        # 一 (U+4E00) and 漢 (U+6F22) are CJK ideographs in our subset.
-        # Look up their glyph names via the actual cmap (subsetter may
-        # have remapped to canonical Adobe names like uni2F00 for U+4E00).
-        assert cmap[0x4E00] in cjk_glyphs
-        assert cmap[0x6F22] in cjk_glyphs
-
-    def test_excludes_kana_glyphs(self, noto_subset):
-        cjk_glyphs = _get_cjk_glyphs(noto_subset)
-        cmap = noto_subset.getBestCmap()
-        assert cmap[0x3042] not in cjk_glyphs  # あ
-        assert cmap[0x30A2] not in cjk_glyphs  # ア
-
-    def test_excludes_latin(self, noto_subset):
-        cjk_glyphs = _get_cjk_glyphs(noto_subset)
-        cmap = noto_subset.getBestCmap()
-        assert cmap[0x0041] not in cjk_glyphs
-
-    def test_empty_when_no_cmap(self, synthetic_ttf):
-        # Drop the cmap and verify graceful fallback to empty set.
-        synthetic_ttf["cmap"].tables = []
-        # getBestCmap returns {} when there are no tables; we accept either
-        # empty dict or None.
-        result = _get_cjk_glyphs(synthetic_ttf)
-        assert result == set()
 
 
 # ---------------------------------------------------------------------------
