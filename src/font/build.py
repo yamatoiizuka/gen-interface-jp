@@ -10,7 +10,8 @@ Shared pipeline per weight:
   3. Apply tracking                            (horizontal hmtx + vertical vmtx)
   4. Merge Inter/InterDisplay + proportional Noto  (font-baker, with
      subFont.excludeCodepoints to keep CJK-conventional symbols on Noto)
-  5. Validate final cmap / glyph order / layout-table integrity
+  5. Add zero-width default-ignorable glyphs    (VS1-16 + ZWNJ/ZWJ)
+  6. Validate final cmap / glyph order / layout-table integrity
 
 Families:
   - Gen Interface JP         : Inter       + proportional Noto, tracking +30 (kana/punct +45, vertical JP +9) at 1000 UPM
@@ -471,6 +472,15 @@ SUB_EXCLUDE_CODEPOINTS = [
 # Negative-circled families (❶-❿ U+2776-U+277F, ➊-➓ U+278A-U+2793) are
 # absent from Inter entirely, so they fall through to Noto without help.
 
+# Default-ignorable controls needed to avoid tofu in literal composers when
+# Gen owns an emoji-capable base text symbol followed by a variation selector
+# (for example U+2764 U+FE0F). U+200B and U+FEFF already come from Inter.
+DEFAULT_IGNORABLE_CODEPOINTS = frozenset((
+    0x200C,  # ZERO WIDTH NON-JOINER
+    0x200D,  # ZERO WIDTH JOINER
+    *range(0xFE00, 0xFE10),  # VARIATION SELECTOR-1..16
+))
+
 # Vertical alignment between Inter and Noto.
 #
 # When the merged font hands its baseline to Inter (`metricsSource: "sub"`),
@@ -845,6 +855,109 @@ def _strip_extreme_glyphs(font: TTFont) -> None:
                         k: v for k, v in st.mapping.items()
                         if k not in to_remove and v not in to_remove
                     }
+
+
+# ---------------------------------------------------------------------------
+# Default-ignorable cmap fillers
+# ---------------------------------------------------------------------------
+
+def _adobe_bmp_glyph_name(codepoint: int) -> str:
+    """Return the Adobe-style glyph name used for a BMP codepoint."""
+    return f"uni{codepoint:04X}"
+
+
+def _available_default_ignorable_glyph_name(codepoint: int, glyphs: set[str]) -> str:
+    """Return an unused glyph name for a default-ignorable codepoint."""
+    base_name = _adobe_bmp_glyph_name(codepoint)
+    if base_name not in glyphs:
+        return base_name
+
+    # Inter currently maps U+FEFF to a glyph named ``uni200D``. Keep that
+    # existing glyph untouched and append a codepoint-specific suffixed glyph
+    # so U+200D still has its own reverse-cmap target.
+    suffix = "defaultIgnorable"
+    candidate = f"{base_name}.{suffix}"
+    if candidate not in glyphs:
+        return candidate
+    index = 1
+    while True:
+        candidate = f"{base_name}.{suffix}{index}"
+        if candidate not in glyphs:
+            return candidate
+        index += 1
+
+
+def _encoded_cmap_codepoints(font: TTFont) -> set[int]:
+    """Return codepoints already encoded in non-UVS cmap subtables."""
+    encoded: set[int] = set()
+    for table in font["cmap"].tables:
+        if table.format == 14:
+            continue
+        encoded.update(table.cmap)
+    return encoded
+
+
+def _add_default_ignorable_glyphs(font: TTFont) -> int:
+    """Add empty zero-width glyphs for selected default-ignorable controls.
+
+    The glyphs are appended after the post-merge font-baker output so they do
+    not pass through proportionalisation or tracking. Existing cmap entries
+    are left untouched, making the step future-proof if a vendor source later
+    encodes any of these controls itself.
+    """
+    from fontTools.ttLib.tables._g_l_y_f import Glyph
+
+    existing_codepoints = _encoded_cmap_codepoints(font)
+    to_add = [
+        cp for cp in sorted(DEFAULT_IGNORABLE_CODEPOINTS)
+        if cp not in existing_codepoints
+    ]
+    if not to_add:
+        return 0
+
+    glyph_order = font.getGlyphOrder()
+    glyphs = set(glyph_order)
+    additions = {}
+    for cp in to_add:
+        glyph_name = _available_default_ignorable_glyph_name(cp, glyphs)
+        additions[cp] = glyph_name
+        glyphs.add(glyph_name)
+
+    new_glyphs = list(additions.values())
+    font.setGlyphOrder([*glyph_order, *new_glyphs])
+
+    for glyph_name in new_glyphs:
+        empty = Glyph()
+        empty.numberOfContours = 0
+        empty.xMin = empty.yMin = empty.xMax = empty.yMax = 0
+        font["glyf"][glyph_name] = empty
+        font["hmtx"].metrics[glyph_name] = (0, 0)
+        if "vmtx" in font:
+            font["vmtx"].metrics[glyph_name] = (0, 0)
+
+    if "maxp" in font:
+        font["maxp"].numGlyphs = len(font.getGlyphOrder())
+
+    for table in font["cmap"].tables:
+        if table.format not in (4, 12):
+            continue
+        if table.platformID not in (0, 3):
+            continue
+        table.cmap.update(additions)
+
+    return len(to_add)
+
+
+def _add_default_ignorable_glyphs_to_ttf(font_path: str) -> int:
+    """Load a final TTF, add default-ignorable glyphs, and save if changed."""
+    font = TTFont(font_path)
+    try:
+        added = _add_default_ignorable_glyphs(font)
+        if added:
+            font.save(font_path)
+        return added
+    finally:
+        font.close()
 
 
 # ---------------------------------------------------------------------------
@@ -1464,7 +1577,10 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
        the merged hhea (``metricsSource: "sub"``), and our manufacturer /
        URL plus the project version get stamped into the final name/head
        metadata.
-    4. **Validate** the final TTF's glyph order, cmap targets, composite
+    4. **Patch** the merged TTF with zero-width default-ignorable glyphs
+       for ZWNJ/ZWJ and VS1-16 so literal composers do not show tofu after
+       emoji-capable text symbols.
+    5. **Validate** the final TTF's glyph order, cmap targets, composite
        components, and layout table compilation after all post-merge rewrites.
     """
     os.makedirs(INTERMEDIATE, exist_ok=True)
@@ -1632,6 +1748,12 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
         {},
         {},
     )
+    default_ignorables_added = _add_default_ignorable_glyphs_to_ttf(final_path)
+    if default_ignorables_added:
+        print(
+            "          Default-ignorable glyphs: "
+            f"{default_ignorables_added} glyph(s) added"
+        )
     _validate_final_ttf(final_path)
     return {
         "fontPath": final_path,

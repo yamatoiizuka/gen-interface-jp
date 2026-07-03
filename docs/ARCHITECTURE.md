@@ -36,6 +36,7 @@ consumes the published webfont package.
         │         output.upm=2048, metricsSource=sub      │
         │         project version + manufacturer stamp    │
         │         normalize GSUB/GPOS coverage order      │
+        │         add default-ignorable cmap fillers      │
         │         validate final cmap / glyph references  │
         │             ↓                                   │
         │   dist/ttf/  (one TTF per family × weight)      │
@@ -111,6 +112,11 @@ For each (family, weight) in FAMILIES × WEIGHTS:
   → install horizontal yakumono-only ss09 against the final cmap / glyph names
     so merge-time glyph renames keep optional horizontal yakumono behavior;
     vertical writing remains a basic full-width fallback
+  → add post-merge default-ignorable zero-width glyphs for U+200C, U+200D,
+    and U+FE00-U+FE0F to format 4 / format 12 cmap tables. These empty glyphs
+    prevent literal composers from rendering tofu for emoji variation
+    selectors or ZWJ after a base text symbol resolved to Gen Interface JP;
+    format 14 UVS data is not modified.
   → validate final TTF integrity: .notdef at GID 0, maxp count, cmap targets,
     composite components, and GSUB/GPOS compilation
 ```
@@ -525,6 +531,7 @@ Tests live under `tests/`, split by surface:
   (`SOURCE_UPM = 1000`, `TARGET_UPM = 2048`), `_glyph_codepoint`, `_reverse_cmap`,
   `_is_kana_or_punct`, `_is_kana_or_punct_codepoint`,
   `_is_cjk_codepoint`, `_get_vert_alternates`, `_apply_x_scale`, `_strip_extreme_glyphs`,
+  `_add_default_ignorable_glyphs`,
   `_apply_tracking`, `_apply_vertical_tracking`, `_apply_glyph_spacing`, `_glyphs_for_codepoints`,
   `_split_cmap_codepoint_glyph`, explicit palt/ss09 spacing policy, vertical
   ss09-disabled policy checks, final TTF integrity validation, and
@@ -552,7 +559,7 @@ Tests live under `tests/`, split by surface:
 
 | File | Tests | Verifies |
 |---|---|---|
-| `test_font_build.py` | 114 | CLI build selection and parallel intermediate path separation, Japanese vertical body scaling/tracking, UPM scaling policy, project-version metadata forwarding, glyph-name parsing, reverse-cmap kana / punctuation classification, CJK classification, GSUB/GPOS walk, baseline palt policy, x-scale, bbox strip, tracking, final TTF integrity validation, ss09 feature retargeting, final runtime feature scaling, InterVariable edge-instance compatibility |
+| `test_font_build.py` | 120 | CLI build selection and parallel intermediate path separation, Japanese vertical body scaling/tracking, UPM scaling policy, project-version metadata forwarding, glyph-name parsing, reverse-cmap kana / punctuation classification, CJK classification, GSUB/GPOS walk, baseline palt policy, x-scale, bbox strip, default-ignorable zero-width glyph insertion, tracking, final TTF integrity validation, ss09 feature retargeting, final runtime feature scaling, InterVariable edge-instance compatibility |
 | `test_proportional.py` | 39 | palt/vpal extraction, cumulative SinglePos lookup reading, glyph translation, GPOS feature removal including vkrn, runtime-palt/vpal helper coverage + base/residual split + optional squeeze helper, ss09 construction + shaping including vertical no-op coverage |
 | `test_release.py` | 2 | GitHub asset URL contract, npm package layout (files glob, license, README, self-host/CDN CSS entrypoints at root) |
 | `test_webfont_build.py` | 42 | Range merge / dedup, unicode-range formatting incl. 5-digit, JIS row mapping, subset plan placement / non-overlap / coverage, strategy parser edge cases |
