@@ -36,6 +36,7 @@ Gen Interface JP はフォントビルドパイプライン (アプリ/UI なし
         │         output.upm=2048, metricsSource=sub      │
         │         project version + manufacturer 刻印      │
         │         GSUB/GPOS coverage order 正規化          │
+        │         final cmap / glyph reference 検証        │
         │             ↓                                   │
         │   dist/ttf/  (ファミリー × ウェイトごとに TTF)    │
         │                                                  │
@@ -88,6 +89,7 @@ FAMILIES × WEIGHTS の各組合せに対して:
     palt/vpal/halt/vhal/vkrn を削除; 横方向の palt 残差だけを
     final ss09 用に保持し、縦方向の vpal/vkrn 挙動は公開しない
   → _apply_tracking で advance を広げ LSB を半分シフト
+    kana / 句読点は reverse cmap で分類
     ただし family["trackingIgnore"] の連続・隙間なし記号は除外
   → normal family では Inter merge 前の Noto 中間 font に対し、
     和文縦組み glyph の vmtx advance に +9 設計 units を加える;
@@ -110,6 +112,8 @@ FAMILIES × WEIGHTS の各組合せに対して:
   → merge 時の glyph rename 後も横方向の optional 約物挙動が残るよう、
     final cmap / glyph 名に対して horizontal yakumono-only ss09 を生成;
     縦組みは基本の全角ベタ組フォールバックとして扱う
+  → final TTF の整合性を検証: .notdef が GID 0、maxp count、cmap target、
+    composite component、GSUB/GPOS compile
 ```
 
 `font.build --jobs N` は family/weight ごとに独立した job を並列実行する。
@@ -197,9 +201,18 @@ inst に対して 4 つのサブパスを in-place で実行:
 2. **トラッキング** (`_apply_tracking`, `_apply_vertical_tracking`) — advance を `tracking` 分広げ、
    `tracking // 2` を LSB に加算してアウトラインを広がった枠の中央に
    配置。kana / 句読点はファミリー設定の `trackingKana` で別値。
-   これらの値は 1000-UPM 設計値として持ち、normal family では `+30` / `+45`
-   を active UPM に換算して適用する。`trackingIgnore` はコードポイント / 範囲を受け取り、cmap で解決した
-   グリフを完全にスキップする。デフォルトでは Noto の tracking stage で
+   分類は reverse cmap 起点にする。これはユーザーが入力するコードポイント
+   単位の方針なので、1 つの glyph が kana / 句読点コードポイントと非 kana
+   コードポイントを共有する場合は kana 側の tracking 値を採用する。
+   例外は漢字グリッドに揃える `U+3000` Ideographic Space、`U+FF0F`
+   Fullwidth Solidus、`U+FF3C` Fullwidth Reverse Solidus。これらは kana
+   tracking ではなく base tracking (normal family では `+30`) のままにし、
+   advance を漢字に揃える。cmap に載らない GSUB alternate は従来通り
+   tolerant な `uniXXXX` glyph 名 parse にフォールバックする。これらの値は
+   1000-UPM 設計値として持ち、normal family では `+30` / `+45` を active UPM
+   に換算して適用する。
+   `trackingIgnore` も同じくコードポイント単位の方針なので、コードポイント /
+   範囲を受け取り cmap で解決したグリフを完全にスキップする。デフォルトでは Noto の tracking stage で
    Box Drawing (`U+2500-U+257F`)、Block Elements (`U+2580-U+259F`)、
    2 点 / 中点 leader (`U+2025`, `U+22EF`)、半角中黒 (`U+FF65`)、`U+3030`、
    縦組み・互換 leader 形式 (`U+FE19`, `U+FE30-U+FE34`,
@@ -213,7 +226,8 @@ inst に対して 4 つのサブパスを in-place で実行:
    active UPM へ換算する: `lsb_delta` は hmtx LSB と
    advance を同量増やし、`rsb_delta` は advance を右側だけ広げる。
    アウトライン座標は触らない。各エントリは特定グリフを特定の隣接リズムに
-   対して個別チューニングする想定なので、慎重に追加すること。現在の調整値は
+   対して個別チューニングする想定なので、慎重に追加すること。これも
+   ユーザー向けコードポイント方針なので、対象 glyph は cmap から解決する。現在の調整値は
    `font/build.py` の `FAMILIES` を参照。小書きひらがな / カタカナは、
    palt 後に詰まり気味に見えるため、このレイヤーで左右に明示的な余白を
    足す。大半の小書き仮名は左右 15 units を基準にしつつ、カタカナの
@@ -311,8 +325,11 @@ TrueType アウトラインのみ対応 (palt のベイクは `glyf` に書き�
 CFF は対象外)。
 Inter との merge では base 側 glyph が rename されることがあるため、
 ビルドは merge 前に横方向の残差を codepoint 単位で保持し、merge 後の
-final cmap / glyph order に対して retarget する。final record には
-Noto optical scale (`SCALE = 0.925`) をこの時点でだけ掛ける。
+final cmap / glyph order に対して retarget する。この codepoint retarget は
+final cmap に encode された glyph だけが対象で、cmap に載らない alternate を
+merge rename 後も残す必要がある場合は `_retarget_named_adjustments` の
+named fallback が担当する。final record には Noto optical scale
+(`SCALE = 0.925`) をこの時点でだけ掛ける。
 pre-merge の `palt_data` は active UPM grid のままにし、焼き込み
 base metrics は merge 時に一度だけ scale
 される。
@@ -397,6 +414,9 @@ Inter の Latin 専用挙動 (各行のグリフに応じた行高動的調整) 
 あたり約 5 MB)。`webfont.build` は各ウェイトを Unicode の範囲で
 スライスし、各スライスに対して `unicode-range:` 付き `@font-face` を 1 つ
 出す。ブラウザはページのテキストが参照したチャンクだけをダウンロードする。
+ここも `unicode-range` というユーザー向けコードポイント方針なので cmap
+起点で計画し、各 WOFF2 内で必要な alternate / positioning data は
+`fontTools.subset` の layout closure に任せる。
 
 ### ストラテジー
 
@@ -490,13 +510,14 @@ PYTHONPATH=src python3 -m pytest        # 全テスト (~35 秒)
 - **`tests/test_font_build.py`** — CLI build selection / parallel intermediate
   path separation、和文 vertical body scaling、UPM 設計値換算、project-version metadata
   forwarding
-  (`SOURCE_UPM = 1000`, `TARGET_UPM = 2048`)、`_glyph_codepoint`, `_is_kana_or_punct`,
+  (`SOURCE_UPM = 1000`, `TARGET_UPM = 2048`)、`_glyph_codepoint`, `_reverse_cmap`,
+  `_is_kana_or_punct`, `_is_kana_or_punct_codepoint`,
   `_is_cjk_codepoint`, `_is_kana_letter`, `_get_cjk_glyphs`,
   `_get_vert_alternates`, `_apply_x_scale`, `_strip_extreme_glyphs`,
   `_apply_tracking`, `_apply_vertical_tracking`, `_apply_glyph_spacing`, `_glyphs_for_codepoints`,
   `_split_cmap_codepoint_glyph`、明示的な palt/ss09 spacing 方針、
-  縦方向 ss09 無効化ポリシーの確認、Thin / ExtraBold 用の
-  InterVariable edge instance source 選択。
+  縦方向 ss09 無効化ポリシーの確認、final TTF integrity validation、
+  Thin / ExtraBold 用の InterVariable edge instance source 選択。
 - **`src/font/verify_edge_instances.py`** — Thin / ExtraBold のビルド後検証。
   生成された InterVariable static instance が vendor static と同じ cmap /
   GSUB / GPOS 表面を保ち、variation table を残さず、指定 `wght` / `opsz`
@@ -520,7 +541,7 @@ PYTHONPATH=src python3 -m pytest        # 全テスト (~35 秒)
 
 | ファイル | テスト数 | 検証内容 |
 |---|---|---|
-| `test_font_build.py` | 115 | CLI build selection / parallel intermediate path separation、和文 vertical body scaling/tracking、UPM 換算ポリシー、project-version metadata forwarding、グリフ名パース、kana / CJK 分類、GSUB/GPOS 走査、baseline palt 方針、x-scale、bbox 除去、tracking、ss09 feature の retarget、final runtime feature scaling、InterVariable edge instance 互換性 |
+| `test_font_build.py` | 126 | CLI build selection / parallel intermediate path separation、和文 vertical body scaling/tracking、UPM 換算ポリシー、project-version metadata forwarding、グリフ名パース、reverse-cmap kana / 句読点分類、CJK 分類、GSUB/GPOS 走査、baseline palt 方針、x-scale、bbox 除去、tracking、final TTF integrity validation、ss09 feature の retarget、final runtime feature scaling、InterVariable edge instance 互換性 |
 | `test_proportional.py` | 39 | palt/vpal 抽出、SinglePos lookup の加算読み取り、グリフ平行移動、vkrn を含む GPOS feature 削除、runtime-palt/vpal helper coverage + base/residual 分割 + optional squeeze helper、ss09 生成 + 縦方向 no-op を含む shaping |
 | `test_release.py` | 2 | GitHub アセット URL 契約、npm パッケージレイアウト (files glob、license、README、self-host/CDN CSS root 配置) |
 | `test_webfont_build.py` | 42 | 範囲マージ / 重複除去、5 桁 hex 含む unicode-range、JIS 区マッピング、サブセット計画の配置 / 非重複 / 完全カバレッジ、ストラテジーパーサーのエッジケース |

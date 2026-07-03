@@ -10,6 +10,7 @@ Shared pipeline per weight:
   3. Apply tracking                            (horizontal hmtx + vertical vmtx)
   4. Merge Inter/InterDisplay + proportional Noto  (font-baker, with
      subFont.excludeCodepoints to keep CJK-conventional symbols on Noto)
+  5. Validate final cmap / glyph order / layout-table integrity
 
 Families:
   - Gen Interface JP         : Inter       + proportional Noto, tracking +30 (kana/punct +45, vertical JP +9) at 1000 UPM
@@ -505,23 +506,62 @@ def _glyph_codepoint(glyph_name: str) -> int | None:
         return None
 
 
-def _is_kana_or_punct(glyph_name: str) -> bool:
-    """Return True for hiragana, katakana, or CJK punctuation glyphs.
+def _reverse_cmap(font: TTFont) -> dict[str, set[int]]:
+    """Return glyph-name -> codepoint set from the font's best cmap."""
+    cmap = font.getBestCmap() or {}
+    reverse: dict[str, set[int]] = {}
+    for cp, glyph_name in cmap.items():
+        reverse.setdefault(glyph_name, set()).add(cp)
+    return reverse
 
-    Used by tracking to apply a separate (usually larger) tracking value
-    to kana and punctuation, since they read at a wider rhythm than Latin
-    when set at the same nominal size.
-    """
-    cp = _glyph_codepoint(glyph_name)
-    if cp is None:
+
+_TRACKING_IDEOGRAPH_ALIGNED_CODEPOINTS = frozenset({
+    0x3000,  # IDEOGRAPHIC SPACE
+    0xFF0F,  # FULLWIDTH SOLIDUS
+    0xFF3C,  # FULLWIDTH REVERSE SOLIDUS
+})
+
+
+def _is_kana_or_punct_codepoint(cp: int) -> bool:
+    """Return True for codepoints that use the kana/punctuation tracking policy."""
+    if cp in _TRACKING_IDEOGRAPH_ALIGNED_CODEPOINTS:
+        # These codepoints align to the ideograph grid, so they keep base
+        # tracking and match kanji advances rather than kana/punctuation rhythm.
         return False
     return (
-        0x3000 <= cp <= 0x303F    # CJK Symbols and Punctuation (。、・「」…)
+        0x3001 <= cp <= 0x303F    # CJK Symbols and Punctuation (。、・「」…)
         or 0x3040 <= cp <= 0x309F  # Hiragana
         or 0x30A0 <= cp <= 0x30FF  # Katakana
         or 0x31F0 <= cp <= 0x31FF  # Katakana Phonetic Extensions
         or 0xFF00 <= cp <= 0xFFEF  # Halfwidth and Fullwidth Forms
     )
+
+
+def _is_kana_or_punct(
+    glyph_name: str,
+    reverse_cmap: dict[str, set[int]] | None = None,
+) -> bool:
+    """Return True for glyphs carrying kana / CJK punctuation codepoints.
+
+    Used by tracking to apply a separate (usually larger) tracking value
+    to kana and punctuation, since they read at a wider rhythm than Latin
+    when set at the same nominal size.
+
+    Tracking is a user-facing codepoint policy, so cmap is authoritative:
+    if a shared glyph is encoded by both a kana/punctuation codepoint and a
+    non-kana codepoint, the kana/punctuation policy wins. Glyphs absent from
+    cmap (for example GSUB alternates such as ``uni3042.ss09``) fall back to
+    tolerant ``uniXXXX`` name parsing.
+    """
+    if reverse_cmap is not None and glyph_name in reverse_cmap:
+        return any(
+            _is_kana_or_punct_codepoint(cp)
+            for cp in reverse_cmap[glyph_name]
+        )
+    cp = _glyph_codepoint(glyph_name)
+    if cp is None:
+        return False
+    return _is_kana_or_punct_codepoint(cp)
 
 
 # ---------------------------------------------------------------------------
@@ -1121,7 +1161,13 @@ def _retarget_feature_adjustments(
     font: TTFont,
     adjustments_by_codepoint: dict[int, tuple[int, int]],
 ) -> dict[str, tuple[int, int]]:
-    """Map codepoint-keyed feature records onto the final font's glyph names."""
+    """Map codepoint-keyed feature records onto the final font's glyph names.
+
+    This intentionally only retargets glyphs still encoded in the final cmap:
+    the ss09 yakumono policy is keyed by user-facing codepoints. Unencoded
+    alternates that need to survive merge-time renames are handled by
+    ``_retarget_named_adjustments`` as a separate named fallback.
+    """
     if not adjustments_by_codepoint:
         return {}
     cmap = font.getBestCmap() or {}
@@ -1194,7 +1240,12 @@ def _tracking_ignore_glyphs(
     font: TTFont,
     tracking_ignore: list | tuple | set | None,
 ) -> set[str]:
-    """Resolve tracking-ignore codepoints to glyph names via cmap."""
+    """Resolve tracking-ignore codepoints to glyph names via cmap.
+
+    Ignore rules are a user-facing codepoint policy (ranges like box drawing
+    and leaders), so cmap resolution is the correct source of truth rather
+    than glyph-name parsing.
+    """
     return _glyphs_for_codepoints(font, tracking_ignore)
 
 
@@ -1226,9 +1277,16 @@ def _apply_tracking(
     excludeCodepoints config (e.g. ``"U+2500-U+257F"`` or ``0x3030``).
     Matching cmap glyphs are skipped entirely, preserving no-gap rhythm for
     box drawing, block elements, leaders, and similar repeatable symbols.
+
+    Kana / punctuation classification is also cmap-first and falls back to
+    tolerant glyph-name parsing only for unencoded alternates. This catches
+    Noto glyphs shared by kana/fullwidth codepoints and non-kana codepoints
+    (for example U+3001 sharing a glyph with a non-kana codepoint) without walking cmap per
+    glyph.
     """
     hmtx = font["hmtx"]
     ignore_glyphs = _tracking_ignore_glyphs(font, tracking_ignore)
+    reverse_cmap = _reverse_cmap(font)
     for glyph_name in font.getGlyphOrder():
         aw, lsb = hmtx[glyph_name]
         if aw == 0:
@@ -1236,7 +1294,7 @@ def _apply_tracking(
         if glyph_name in ignore_glyphs:
             continue
         t = tracking
-        if tracking_kana is not None and _is_kana_or_punct(glyph_name):
+        if tracking_kana is not None and _is_kana_or_punct(glyph_name, reverse_cmap):
             t = tracking_kana
         half = t // 2
         hmtx[glyph_name] = (aw + t, lsb + half)
@@ -1273,7 +1331,10 @@ def _apply_glyph_spacing(font: TTFont, spacing: dict | None) -> int:
 
     Glyphs whose codepoint is absent from cmap and zero-advance glyphs
     (combining marks, mark anchors) are skipped silently. Returns the
-    number of glyphs actually adjusted.
+    number of glyphs actually adjusted. This is intentionally cmap-based:
+    ``glyphSpacing`` expresses user-facing character policy, so shared or
+    renamed glyphs must be resolved from codepoints rather than inferred from
+    glyph names.
     """
     if not spacing:
         return 0
@@ -1335,6 +1396,75 @@ def _normalize_layout_coverage_order(font_path: str) -> None:
         font.save(font_path)
 
 
+def _validate_font_integrity(font: TTFont, label: str = "<font>") -> None:
+    """Raise if a final TTF has dangling glyph references or stale counts."""
+    glyph_order = font.getGlyphOrder()
+    glyphs = set(glyph_order)
+    problems: list[str] = []
+
+    if not glyph_order:
+        problems.append("glyph order is empty")
+    elif glyph_order[0] != ".notdef":
+        problems.append(f".notdef must be GID 0, got {glyph_order[0]!r}")
+
+    if "maxp" not in font:
+        problems.append("missing maxp table")
+    elif font["maxp"].numGlyphs != len(glyph_order):
+        problems.append(
+            f"maxp.numGlyphs={font['maxp'].numGlyphs} but glyph order has "
+            f"{len(glyph_order)} glyphs"
+        )
+
+    if "cmap" in font:
+        for table in font["cmap"].tables:
+            for cp, glyph_name in table.cmap.items():
+                if glyph_name not in glyphs:
+                    problems.append(
+                        f"cmap format {table.format} U+{cp:04X} -> "
+                        f"{glyph_name!r} is not in glyph order"
+                    )
+    else:
+        problems.append("missing cmap table")
+
+    if "glyf" in font:
+        glyf = font["glyf"]
+        for glyph_name in glyph_order:
+            if glyph_name not in glyf:
+                problems.append(f"glyph order entry {glyph_name!r} is missing from glyf")
+                continue
+            glyph = glyf[glyph_name]
+            if not glyph.isComposite():
+                continue
+            for component in glyph.components:
+                if component.glyphName not in glyphs:
+                    problems.append(
+                        f"composite {glyph_name!r} references missing component "
+                        f"{component.glyphName!r}"
+                    )
+
+    for table_tag in ("GSUB", "GPOS"):
+        if table_tag not in font:
+            continue
+        try:
+            font[table_tag].compile(font)
+        except Exception as exc:  # pragma: no cover - message varies by fontTools
+            problems.append(f"{table_tag} failed to compile: {exc}")
+
+    if problems:
+        details = "\n  - ".join(problems)
+        raise ValueError(f"Font integrity validation failed for {label}:\n  - {details}")
+
+
+def _validate_final_ttf(font_path: str) -> None:
+    """Load and validate a generated final TTF from disk."""
+    font = TTFont(font_path)
+    try:
+        with _suppress_fonttools_coverage_warnings():
+            _validate_font_integrity(font, font_path)
+    finally:
+        font.close()
+
+
 # ---------------------------------------------------------------------------
 # Pipeline
 # ---------------------------------------------------------------------------
@@ -1376,6 +1506,8 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
        the merged hhea (``metricsSource: "sub"``), and our manufacturer /
        URL plus the project version get stamped into the final name/head
        metadata.
+    4. **Validate** the final TTF's glyph order, cmap targets, composite
+       components, and layout table compilation after all post-merge rewrites.
     """
     os.makedirs(INTERMEDIATE, exist_ok=True)
 
@@ -1542,6 +1674,7 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
         {},
         {},
     )
+    _validate_final_ttf(final_path)
     return {
         "fontPath": final_path,
     }

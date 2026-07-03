@@ -34,9 +34,11 @@ from font.build import (
     _is_cjk_codepoint,
     _is_kana_letter,
     _is_kana_or_punct,
+    _is_kana_or_punct_codepoint,
     _parallel_task_command,
     _parse_args,
     _project_version,
+    _reverse_cmap,
     _retarget_feature_adjustments,
     _retarget_named_adjustments,
     _runtime_palt_residual_adjustment,
@@ -49,6 +51,7 @@ from font.build import (
     _select_build_matrix,
     _split_cmap_codepoint_glyph,
     _strip_extreme_glyphs,
+    _validate_font_integrity,
     _vertical_body_glyphs,
     _build_inter_variable_instance,
     _default_inter_static_path,
@@ -103,6 +106,13 @@ def _layout_feature_tags(font: TTFont, table_tag: str) -> set[str]:
     if feature_list is None:
         return set()
     return {record.FeatureTag for record in feature_list.FeatureRecord}
+
+
+def _add_glyph_copy(font: TTFont, source_glyph: str, new_glyph: str) -> None:
+    """Append a simple glyph copy to a synthetic test font."""
+    font.setGlyphOrder([*font.getGlyphOrder(), new_glyph])
+    font["glyf"][new_glyph] = copy.deepcopy(font["glyf"][source_glyph])
+    font["hmtx"].metrics[new_glyph] = font["hmtx"][source_glyph]
 
 
 # ---------------------------------------------------------------------------
@@ -373,7 +383,18 @@ class TestGlyphCodepoint:
 # ---------------------------------------------------------------------------
 
 class TestIsKanaOrPunct:
-    """Hiragana / katakana / CJK-punct classification by glyph name."""
+    """Hiragana / katakana / CJK-punct classification by cmap, then name."""
+
+    def test_codepoint_helper_covers_policy_ranges(self):
+        assert not _is_kana_or_punct_codepoint(0x3000)
+        assert _is_kana_or_punct_codepoint(0x3001)
+        assert _is_kana_or_punct_codepoint(0x3042)
+        assert _is_kana_or_punct_codepoint(0x30A2)
+        assert _is_kana_or_punct_codepoint(0x31F0)
+        assert not _is_kana_or_punct_codepoint(0xFF0F)
+        assert not _is_kana_or_punct_codepoint(0xFF3C)
+        assert _is_kana_or_punct_codepoint(0xFF21)
+        assert not _is_kana_or_punct_codepoint(0x2003)
 
     def test_hiragana_letter(self):
         assert _is_kana_or_punct("uni3042")  # あ
@@ -402,6 +423,21 @@ class TestIsKanaOrPunct:
     def test_unparseable_name_returns_false(self):
         assert not _is_kana_or_punct(".notdef")
         assert not _is_kana_or_punct("uniGGGG")
+
+    def test_reverse_cmap_makes_shared_glyph_kana_when_any_codepoint_matches(self):
+        reverse_cmap = {"uni2003": {0x2003, 0x3001}}
+
+        assert _is_kana_or_punct("uni2003", reverse_cmap)
+
+    def test_reverse_cmap_suppresses_name_false_positive_for_encoded_glyph(self):
+        reverse_cmap = {"uni3042": {0x0041}}
+
+        assert not _is_kana_or_punct("uni3042", reverse_cmap)
+
+    def test_unencoded_alternate_falls_back_to_glyph_name(self):
+        reverse_cmap = {"uni3042": {0x3042}}
+
+        assert _is_kana_or_punct("uni3042.ss09", reverse_cmap)
 
 
 # ---------------------------------------------------------------------------
@@ -763,6 +799,74 @@ class TestApplyTracking:
 
         after = synthetic_ttf["hmtx"]["uni3001"]
         assert after[0] == before[0] + 80
+
+    def test_shared_cmap_glyph_uses_kana_tracking_when_any_codepoint_matches(self, synthetic_ttf):
+        _add_glyph_copy(synthetic_ttf, "A", "uni2003")
+        for table in synthetic_ttf["cmap"].tables:
+            table.cmap[0x2003] = "uni2003"
+            table.cmap[0x3001] = "uni2003"
+        before = synthetic_ttf["hmtx"]["uni2003"]
+
+        reverse_cmap = _reverse_cmap(synthetic_ttf)
+        _apply_tracking(synthetic_ttf, tracking=10, tracking_kana=80)
+
+        assert reverse_cmap["uni2003"] == {0x2003, 0x3001}
+        assert synthetic_ttf["hmtx"]["uni2003"][0] == before[0] + 80
+        assert synthetic_ttf["hmtx"]["uni2003"][1] == before[1] + 40
+
+    def test_ideographic_space_uses_base_tracking_for_grid_alignment(self, synthetic_ttf):
+        _add_glyph_copy(synthetic_ttf, "A", "uni3000")
+        for table in synthetic_ttf["cmap"].tables:
+            table.cmap[0x3000] = "uni3000"
+        before_ideographic = synthetic_ttf["hmtx"]["uni3000"]
+
+        _apply_tracking(synthetic_ttf, tracking=30, tracking_kana=45)
+
+        assert synthetic_ttf["hmtx"]["uni3000"][0] == before_ideographic[0] + 30
+        assert synthetic_ttf["hmtx"]["uni3000"][1] == before_ideographic[1] + 15
+
+    def test_shared_ideographic_space_glyph_still_uses_base_tracking(self, synthetic_ttf):
+        _add_glyph_copy(synthetic_ttf, "A", "uni2003")
+        for table in synthetic_ttf["cmap"].tables:
+            table.cmap[0x2003] = "uni2003"
+            table.cmap[0x3000] = "uni2003"
+        before_shared = synthetic_ttf["hmtx"]["uni2003"]
+
+        reverse_cmap = _reverse_cmap(synthetic_ttf)
+        _apply_tracking(synthetic_ttf, tracking=30, tracking_kana=45)
+
+        assert reverse_cmap["uni2003"] == {0x2003, 0x3000}
+        assert synthetic_ttf["hmtx"]["uni2003"][0] == before_shared[0] + 30
+        assert synthetic_ttf["hmtx"]["uni2003"][1] == before_shared[1] + 15
+
+    def test_fullwidth_slash_pair_uses_base_tracking_for_grid_alignment(self, synthetic_ttf):
+        _add_glyph_copy(synthetic_ttf, "A", "uni2215")
+        _add_glyph_copy(synthetic_ttf, "A", "uniFF3C")
+        for table in synthetic_ttf["cmap"].tables:
+            table.cmap[0x2215] = "uni2215"
+            table.cmap[0xFF0F] = "uni2215"
+            table.cmap[0xFF3C] = "uniFF3C"
+        before_solidus = synthetic_ttf["hmtx"]["uni2215"]
+        before_reverse_solidus = synthetic_ttf["hmtx"]["uniFF3C"]
+
+        reverse_cmap = _reverse_cmap(synthetic_ttf)
+        _apply_tracking(synthetic_ttf, tracking=30, tracking_kana=45)
+
+        assert reverse_cmap["uni2215"] == {0x2215, 0xFF0F}
+        assert synthetic_ttf["hmtx"]["uni2215"][0] == before_solidus[0] + 30
+        assert synthetic_ttf["hmtx"]["uni2215"][1] == before_solidus[1] + 15
+        assert synthetic_ttf["hmtx"]["uniFF3C"][0] == before_reverse_solidus[0] + 30
+        assert synthetic_ttf["hmtx"]["uniFF3C"][1] == before_reverse_solidus[1] + 15
+
+    def test_unencoded_ss09_style_glyph_falls_back_to_name_for_kana_tracking(self, synthetic_ttf):
+        _add_glyph_copy(synthetic_ttf, "uni3042", "uni3042.ss09")
+        before = synthetic_ttf["hmtx"]["uni3042.ss09"]
+
+        _apply_tracking(synthetic_ttf, tracking=10, tracking_kana=80)
+
+        assert "uni3042.ss09" not in _reverse_cmap(synthetic_ttf)
+        assert synthetic_ttf["hmtx"]["uni3042.ss09"][0] == before[0] + 80
+        assert synthetic_ttf["hmtx"]["uni3042.ss09"][1] == before[1] + 40
 
     def test_zero_width_glyphs_skipped(self, synthetic_ttf):
         # Zero-width glyphs (e.g. mark positioning) shouldn't gain tracking.
@@ -1269,3 +1373,21 @@ class TestApplyGlyphSpacing:
         assert after_glyph.xMin == before_glyph.xMin
         assert after_glyph.xMax == before_glyph.xMax
         assert list(after_glyph.coordinates) == list(before_glyph.coordinates)
+
+
+# ---------------------------------------------------------------------------
+# final font validation
+# ---------------------------------------------------------------------------
+
+class TestFinalFontValidation:
+    """Sanity checks for final TTF glyph-order integrity."""
+
+    def test_valid_synthetic_font_passes(self, synthetic_ttf):
+        _validate_font_integrity(synthetic_ttf, "synthetic")
+
+    def test_dangling_cmap_target_fails(self, synthetic_ttf):
+        for table in synthetic_ttf["cmap"].tables:
+            table.cmap[0x1234] = "missingGlyph"
+
+        with pytest.raises(ValueError, match="cmap format"):
+            _validate_font_integrity(synthetic_ttf, "broken")

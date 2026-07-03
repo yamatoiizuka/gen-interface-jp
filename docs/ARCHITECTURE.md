@@ -36,6 +36,7 @@ consumes the published webfont package.
         │         output.upm=2048, metricsSource=sub      │
         │         project version + manufacturer stamp    │
         │         normalize GSUB/GPOS coverage order      │
+        │         validate final cmap / glyph references  │
         │             ↓                                   │
         │   dist/ttf/  (one TTF per family × weight)      │
         │                                                  │
@@ -88,6 +89,7 @@ For each (family, weight) in FAMILIES × WEIGHTS:
     horizontal palt residuals are held for final ss09 alternates while
     vertical vpal/vkrn behavior is not exposed
   → _apply_tracking widens advances + half-balances LSB
+    using reverse-cmap kana / punctuation classification
     except repeatable no-gap symbols in family["trackingIgnore"]
   → normal-family vertical tracking adds +9 design units to Japanese
     vmtx advances before the Inter merge; Display stays at +0
@@ -109,6 +111,8 @@ For each (family, weight) in FAMILIES × WEIGHTS:
   → install horizontal yakumono-only ss09 against the final cmap / glyph names
     so merge-time glyph renames keep optional horizontal yakumono behavior;
     vertical writing remains a basic full-width fallback
+  → validate final TTF integrity: .notdef at GID 0, maxp count, cmap targets,
+    composite components, and GSUB/GPOS compilation
 ```
 
 `font.build --jobs N` dispatches independent family/weight jobs in parallel.
@@ -196,10 +200,19 @@ Four sub-passes, all in-place on the inst:
 2. **Tracking** (`_apply_tracking`, `_apply_vertical_tracking`) — advance grows by `tracking`;
    `tracking // 2` is added to LSB so the outline sits centred in the
    wider slot. Kana / punctuation get a separate `trackingKana` value
-   when set on the family. These constants are authored on the 1000-UPM
-   design grid (`+30` / `+45` for the normal family) and scaled to the
-   active UPM before application. `trackingIgnore` accepts codepoints / ranges
-   and skips glyphs resolved through cmap. The default ignore list keeps
+   when set on the family. Classification is reverse-cmap first because this
+   is a user-facing codepoint policy: if one glyph is shared by a kana /
+   punctuation codepoint and a non-kana codepoint, it receives the kana
+   tracking value. The exceptions are ideograph-grid-aligned codepoints
+   `U+3000` Ideographic Space, `U+FF0F` Fullwidth Solidus, and `U+FF3C`
+   Fullwidth Reverse Solidus; they stay on base tracking (`+30` in the normal
+   family) rather than kana tracking so their advance aligns with kanji.
+   Unencoded GSUB alternates fall back to tolerant `uniXXXX` glyph-name parsing.
+   These constants are authored on the 1000-UPM design grid (`+30` / `+45` for
+   the normal family) and scaled to the active UPM before application.
+   `trackingIgnore` accepts codepoints / ranges
+   and skips glyphs resolved through cmap for the same codepoint-policy reason.
+   The default ignore list keeps
    the Noto tracking stage from widening Box Drawing (`U+2500-U+257F`),
    Block Elements (`U+2580-U+259F`), two-dot / midline leaders
    (`U+2025`, `U+22EF`), halfwidth middle dot (`U+FF65`), `U+3030`,
@@ -215,7 +228,8 @@ Four sub-passes, all in-place on the inst:
    hmtx LSB and advance by the same amount, while `rsb_delta` only grows
    advance on the right. Outline coordinates are never touched. Populate
    sparingly — each entry hand-tuned for one glyph against a specific
-   neighbour rhythm. Refer to `FAMILIES` in `font/build.py` for the
+   neighbour rhythm. It resolves targets through cmap because the setting is
+   also a user-facing codepoint policy. Refer to `FAMILIES` in `font/build.py` for the
    current set of adjustments. Small hiragana / katakana use this layer to
    add explicit margin on both sides after palt, because the small forms
    otherwise read too tight in UI text; most small kana use 15 units per
@@ -317,8 +331,11 @@ optional yakumono spacing under horizontal `ss09`. Only TrueType outlines are su
 — palt baking writes back to `glyf`, not CFF.
 Because the Inter merge can rename colliding base glyphs, the build captures
 horizontal residuals by codepoint before the merge, then retargets them
-against the final cmap / glyph order afterward. Those final records are scaled by the final Noto
-optical scale (`SCALE = 0.925`) at install time only; the pre-merge
+against the final cmap / glyph order afterward. This codepoint retargeting
+only applies to glyphs encoded in the final cmap; named fallback records use
+`_retarget_named_adjustments` when an unencoded alternate needs to survive a
+merge rename. Those final records are scaled by the final Noto optical scale
+(`SCALE = 0.925`) at install time only; the pre-merge
 `palt_data` remains on the active UPM grid so baked base metrics
 are scaled exactly once by the merge.
 
@@ -403,7 +420,9 @@ The TTF/WOFF2 outputs from `font.build` are too large to load whole on
 the web (~5 MB WOFF2 per weight). `webfont.build` slices each weight
 along Unicode ranges and emits one `@font-face` rule per slice with a
 `unicode-range:` guard. Browsers download only the chunks the page text
-references.
+references. The plan is cmap/codepoint-driven because `unicode-range` is a
+user-facing character policy; `fontTools.subset` performs the layout closure
+needed to retain referenced alternates and positioning data inside each WOFF2.
 
 ### Strategies
 
@@ -500,13 +519,14 @@ Tests live under `tests/`, split by surface:
   path separation, Japanese vertical body scaling, UPM design-unit scaling,
   project-version
   metadata forwarding
-  (`SOURCE_UPM = 1000`, `TARGET_UPM = 2048`), `_glyph_codepoint`, `_is_kana_or_punct`,
+  (`SOURCE_UPM = 1000`, `TARGET_UPM = 2048`), `_glyph_codepoint`, `_reverse_cmap`,
+  `_is_kana_or_punct`, `_is_kana_or_punct_codepoint`,
   `_is_cjk_codepoint`, `_is_kana_letter`, `_get_cjk_glyphs`,
   `_get_vert_alternates`, `_apply_x_scale`, `_strip_extreme_glyphs`,
   `_apply_tracking`, `_apply_vertical_tracking`, `_apply_glyph_spacing`, `_glyphs_for_codepoints`,
   `_split_cmap_codepoint_glyph`, explicit palt/ss09 spacing policy, vertical
-  ss09-disabled policy checks, and InterVariable edge-instance
-  source selection for Thin / ExtraBold.
+  ss09-disabled policy checks, final TTF integrity validation, and
+  InterVariable edge-instance source selection for Thin / ExtraBold.
 - **`src/font/verify_edge_instances.py`** — post-build verification for
   Thin / ExtraBold edge outputs. Confirms the generated InterVariable static
   instances keep the vendor static cmap / GSUB / GPOS surface, contain no
@@ -530,7 +550,7 @@ Tests live under `tests/`, split by surface:
 
 | File | Tests | Verifies |
 |---|---|---|
-| `test_font_build.py` | 115 | CLI build selection and parallel intermediate path separation, Japanese vertical body scaling/tracking, UPM scaling policy, project-version metadata forwarding, glyph-name parsing, kana / CJK classification, GSUB/GPOS walk, baseline palt policy, x-scale, bbox strip, tracking, ss09 feature retargeting, final runtime feature scaling, InterVariable edge-instance compatibility |
+| `test_font_build.py` | 126 | CLI build selection and parallel intermediate path separation, Japanese vertical body scaling/tracking, UPM scaling policy, project-version metadata forwarding, glyph-name parsing, reverse-cmap kana / punctuation classification, CJK classification, GSUB/GPOS walk, baseline palt policy, x-scale, bbox strip, tracking, final TTF integrity validation, ss09 feature retargeting, final runtime feature scaling, InterVariable edge-instance compatibility |
 | `test_proportional.py` | 39 | palt/vpal extraction, cumulative SinglePos lookup reading, glyph translation, GPOS feature removal including vkrn, runtime-palt/vpal helper coverage + base/residual split + optional squeeze helper, ss09 construction + shaping including vertical no-op coverage |
 | `test_release.py` | 2 | GitHub asset URL contract, npm package layout (files glob, license, README, self-host/CDN CSS entrypoints at root) |
 | `test_webfont_build.py` | 42 | Range merge / dedup, unicode-range formatting incl. 5-digit, JIS row mapping, subset plan placement / non-overlap / coverage, strategy parser edge cases |
