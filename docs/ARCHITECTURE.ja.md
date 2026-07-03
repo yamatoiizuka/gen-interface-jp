@@ -36,6 +36,7 @@ Gen Interface JP はフォントビルドパイプライン (アプリ/UI なし
         │         output.upm=2048, metricsSource=sub      │
         │         project version + manufacturer 刻印      │
         │         GSUB/GPOS coverage order 正規化          │
+        │         default-ignorable cmap filler 追加       │
         │         final cmap / glyph reference 検証        │
         │             ↓                                   │
         │   dist/ttf/  (ファミリー × ウェイトごとに TTF)    │
@@ -112,6 +113,11 @@ FAMILIES × WEIGHTS の各組合せに対して:
   → merge 時の glyph rename 後も横方向の optional 約物挙動が残るよう、
     final cmap / glyph 名に対して horizontal yakumono-only ss09 を生成;
     縦組みは基本の全角ベタ組フォールバックとして扱う
+  → post-merge で U+200C、U+200D、U+FE00-U+FE0F に zero-width の
+    default-ignorable 空 glyph を追加し、format 4 / format 12 cmap に載せる。
+    Gen Interface JP に解決された絵文字兼用テキスト記号の直後に variation
+    selector や ZWJ が来たとき、literal なコンポーザーが tofu 表示するのを防ぐ。
+    format 14 UVS は変更しない
   → final TTF の整合性を検証: .notdef が GID 0、maxp count、cmap target、
     composite component、GSUB/GPOS compile
 ```
@@ -516,6 +522,7 @@ PYTHONPATH=src python3 -m pytest        # 全テスト (~35 秒)
   (`SOURCE_UPM = 1000`, `TARGET_UPM = 2048`)、`_glyph_codepoint`, `_reverse_cmap`,
   `_is_kana_or_punct`, `_is_kana_or_punct_codepoint`,
   `_is_cjk_codepoint`, `_get_vert_alternates`, `_apply_x_scale`, `_strip_extreme_glyphs`,
+  `_add_default_ignorable_glyphs`,
   `_apply_tracking`, `_apply_vertical_tracking`, `_apply_glyph_spacing`, `_glyphs_for_codepoints`,
   `_split_cmap_codepoint_glyph`、明示的な palt/ss09 spacing 方針、
   縦方向 ss09 無効化ポリシーの確認、final TTF integrity validation、
@@ -543,7 +550,7 @@ PYTHONPATH=src python3 -m pytest        # 全テスト (~35 秒)
 
 | ファイル | テスト数 | 検証内容 |
 |---|---|---|
-| `test_font_build.py` | 114 | CLI build selection / parallel intermediate path separation、和文 vertical body scaling/tracking、UPM 換算ポリシー、project-version metadata forwarding、グリフ名パース、reverse-cmap kana / 句読点分類、CJK 分類、GSUB/GPOS 走査、baseline palt 方針、x-scale、bbox 除去、tracking、final TTF integrity validation、ss09 feature の retarget、final runtime feature scaling、InterVariable edge instance 互換性 |
+| `test_font_build.py` | 120 | CLI build selection / parallel intermediate path separation、和文 vertical body scaling/tracking、UPM 換算ポリシー、project-version metadata forwarding、グリフ名パース、reverse-cmap kana / 句読点分類、CJK 分類、GSUB/GPOS 走査、baseline palt 方針、x-scale、bbox 除去、default-ignorable zero-width glyph 追加、tracking、final TTF integrity validation、ss09 feature の retarget、final runtime feature scaling、InterVariable edge instance 互換性 |
 | `test_proportional.py` | 39 | palt/vpal 抽出、SinglePos lookup の加算読み取り、グリフ平行移動、vkrn を含む GPOS feature 削除、runtime-palt/vpal helper coverage + base/residual 分割 + optional squeeze helper、ss09 生成 + 縦方向 no-op を含む shaping |
 | `test_release.py` | 2 | GitHub アセット URL 契約、npm パッケージレイアウト (files glob、license、README、self-host/CDN CSS root 配置) |
 | `test_webfont_build.py` | 42 | 範囲マージ / 重複除去、5 桁 hex 含む unicode-range、JIS 区マッピング、サブセット計画の配置 / 非重複 / 完全カバレッジ、ストラテジーパーサーのエッジケース |

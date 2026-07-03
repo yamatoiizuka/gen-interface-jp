@@ -8,13 +8,17 @@ inspection, horizontal scaling, bbox stripping, and tracking.
 from __future__ import annotations
 
 import copy
+import io
 import re
 from pathlib import Path
 
 import pytest
 from fontTools.ttLib import TTFont, newTable
+from fontTools.ttLib.tables._c_m_a_p import CmapSubtable
 
 from font.build import (
+    DEFAULT_IGNORABLE_CODEPOINTS,
+    _add_default_ignorable_glyphs,
     _apply_glyph_spacing,
     _apply_tracking,
     _apply_vertical_tracking,
@@ -111,6 +115,25 @@ def _add_glyph_copy(font: TTFont, source_glyph: str, new_glyph: str) -> None:
     font.setGlyphOrder([*font.getGlyphOrder(), new_glyph])
     font["glyf"][new_glyph] = copy.deepcopy(font["glyf"][source_glyph])
     font["hmtx"].metrics[new_glyph] = font["hmtx"][source_glyph]
+
+
+def _add_format12_cmap_tables(font: TTFont) -> None:
+    """Add standard platform 0/3 format 12 cmap tables to a synthetic font."""
+    existing_keys = {
+        (table.platformID, table.platEncID, table.format)
+        for table in font["cmap"].tables
+    }
+    base_cmap = dict(font.getBestCmap() or {})
+    for platform_id, platform_encoding_id in ((0, 4), (3, 10)):
+        key = (platform_id, platform_encoding_id, 12)
+        if key in existing_keys:
+            continue
+        table = CmapSubtable.newSubtable(12)
+        table.platformID = platform_id
+        table.platEncID = platform_encoding_id
+        table.language = 0
+        table.cmap = dict(base_cmap)
+        font["cmap"].tables.append(table)
 
 
 # ---------------------------------------------------------------------------
@@ -624,6 +647,137 @@ class TestStripExtremeGlyphs:
 
     def test_vertical_repeat_mark_policy_matches_unicode_range(self):
         assert _VERTICAL_REPEAT_MARK_CODEPOINTS == tuple(range(0x3031, 0x3036))
+
+
+# ---------------------------------------------------------------------------
+# default-ignorable glyphs
+# ---------------------------------------------------------------------------
+
+class TestDefaultIgnorableGlyphs:
+    """Post-merge zero-width fillers for emoji selectors and joiners."""
+
+    def test_constant_covers_joiners_and_variation_selectors_only(self):
+        assert DEFAULT_IGNORABLE_CODEPOINTS == frozenset((
+            0x200C,
+            0x200D,
+            *range(0xFE00, 0xFE10),
+        ))
+        assert len(DEFAULT_IGNORABLE_CODEPOINTS) == 18
+        assert 0x200B not in DEFAULT_IGNORABLE_CODEPOINTS
+        assert 0xFEFF not in DEFAULT_IGNORABLE_CODEPOINTS
+
+    def test_adds_all_codepoints_to_format_4_and_12_cmaps(self, synthetic_ttf):
+        _add_format12_cmap_tables(synthetic_ttf)
+
+        added = _add_default_ignorable_glyphs(synthetic_ttf)
+
+        assert added == 18
+        target_tables = [
+            table for table in synthetic_ttf["cmap"].tables
+            if table.platformID in (0, 3) and table.format in (4, 12)
+        ]
+        assert {
+            (table.platformID, table.platEncID, table.format)
+            for table in target_tables
+        } == {
+            (0, 3, 4),
+            (0, 4, 12),
+            (3, 1, 4),
+            (3, 10, 12),
+        }
+        for table in target_tables:
+            for cp in DEFAULT_IGNORABLE_CODEPOINTS:
+                assert table.cmap[cp] == f"uni{cp:04X}"
+
+    def test_added_glyphs_are_empty_and_zero_width(self, synthetic_ttf):
+        _add_format12_cmap_tables(synthetic_ttf)
+        vmtx = newTable("vmtx")
+        vmtx.metrics = {
+            glyph_name: (1000, 100)
+            for glyph_name in synthetic_ttf.getGlyphOrder()
+        }
+        synthetic_ttf["vmtx"] = vmtx
+
+        _add_default_ignorable_glyphs(synthetic_ttf)
+
+        for cp in DEFAULT_IGNORABLE_CODEPOINTS:
+            glyph_name = f"uni{cp:04X}"
+            glyph = synthetic_ttf["glyf"][glyph_name]
+            assert glyph.numberOfContours == 0
+            assert (glyph.xMin, glyph.yMin, glyph.xMax, glyph.yMax) == (0, 0, 0, 0)
+            assert synthetic_ttf["hmtx"][glyph_name] == (0, 0)
+            assert synthetic_ttf["vmtx"][glyph_name] == (0, 0)
+
+    def test_existing_codepoints_are_not_overwritten(self, synthetic_ttf):
+        _add_format12_cmap_tables(synthetic_ttf)
+        for table in synthetic_ttf["cmap"].tables:
+            if table.platformID in (0, 3) and table.format in (4, 12):
+                table.cmap[0xFE0F] = "A"
+
+        added = _add_default_ignorable_glyphs(synthetic_ttf)
+
+        assert added == 17
+        assert "uniFE0F" not in synthetic_ttf.getGlyphOrder()
+        for table in synthetic_ttf["cmap"].tables:
+            if table.platformID in (0, 3) and table.format in (4, 12):
+                assert table.cmap[0xFE0F] == "A"
+
+    def test_existing_glyph_name_collision_gets_individual_suffixed_glyph(
+        self,
+        synthetic_ttf,
+    ):
+        _add_format12_cmap_tables(synthetic_ttf)
+        _add_glyph_copy(synthetic_ttf, "A", "uni200D")
+        for table in synthetic_ttf["cmap"].tables:
+            if table.platformID in (0, 3) and table.format in (4, 12):
+                table.cmap[0xFEFF] = "uni200D"
+        before_glyph = copy.deepcopy(synthetic_ttf["glyf"]["uni200D"])
+        before_hmtx = synthetic_ttf["hmtx"]["uni200D"]
+
+        _add_default_ignorable_glyphs(synthetic_ttf)
+
+        zwj_targets = {
+            table.cmap[0x200D]
+            for table in synthetic_ttf["cmap"].tables
+            if table.platformID in (0, 3) and table.format in (4, 12)
+        }
+        assert len(zwj_targets) == 1
+        zwj_glyph = next(iter(zwj_targets))
+        assert zwj_glyph.startswith("uni200D.")
+        assert zwj_glyph != "uni200D"
+        assert synthetic_ttf["hmtx"]["uni200D"] == before_hmtx
+        assert (
+            synthetic_ttf["glyf"]["uni200D"].numberOfContours
+            == before_glyph.numberOfContours
+        )
+        assert synthetic_ttf["glyf"][zwj_glyph].numberOfContours == 0
+        assert synthetic_ttf["hmtx"][zwj_glyph] == (0, 0)
+        for table in synthetic_ttf["cmap"].tables:
+            if table.platformID in (0, 3) and table.format in (4, 12):
+                assert table.cmap[0xFEFF] == "uni200D"
+
+    def test_glyph_order_and_maxp_stay_consistent_after_roundtrip(self, synthetic_ttf):
+        _add_format12_cmap_tables(synthetic_ttf)
+        before_order = synthetic_ttf.getGlyphOrder()
+        expected_new_glyphs = [
+            f"uni{cp:04X}" for cp in sorted(DEFAULT_IGNORABLE_CODEPOINTS)
+        ]
+
+        _add_default_ignorable_glyphs(synthetic_ttf)
+
+        assert synthetic_ttf.getGlyphOrder() == [*before_order, *expected_new_glyphs]
+        assert synthetic_ttf["maxp"].numGlyphs == len(synthetic_ttf.getGlyphOrder())
+        _validate_font_integrity(synthetic_ttf, "synthetic default-ignorables")
+
+        buf = io.BytesIO()
+        synthetic_ttf.save(buf)
+        buf.seek(0)
+        reloaded = TTFont(buf)
+        try:
+            assert reloaded["maxp"].numGlyphs == len(reloaded.getGlyphOrder())
+            _validate_font_integrity(reloaded, "reloaded default-ignorables")
+        finally:
+            reloaded.close()
 
 
 # ---------------------------------------------------------------------------
