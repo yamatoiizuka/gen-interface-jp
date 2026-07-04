@@ -189,7 +189,10 @@ Four sub-passes, all in-place on the inst:
    baked at full strength, but yakumono listed in `PALT_FEATURE_CHARS`
    is split: 34% of the palt adjustment is baked into `hmtx` so the glyph is
    still tightened by default, and the remaining 66% is held for a final
-   yakumono-only `ss09` stylistic set named "約物半角". For Noto's common
+   yakumono-only `ss09` stylistic set named "約物半角". The ss09 UI label
+   is written as Windows Unicode name records only (en 0x409 / ja 0x411,
+   `mac=False`), matching ofl-font-baker 0.4.8+'s policy of shipping no
+   Macintosh name records. For Noto's common
    `XAdvance=-500` yakumono records at the 1000-UPM source scale, the
    equivalent 2048-UPM record is `-1024`; palt-off gets `-348` baked into
    the base advance and enabling `ss09` applies the remaining `-676`.

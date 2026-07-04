@@ -191,7 +191,9 @@ inst に対して 4 つのサブパスを in-place で実行:
    原則として全量で焼き込むが、`PALT_FEATURE_CHARS` の約物は分割する。
    palt 調整量の 34% を `hmtx` に焼き込んでデフォルトでもある程度
    詰まる base metrics にし、残り 66% は final の yakumono-only `ss09`
-   stylistic set「約物半角」用に保持する。Noto の典型的な 1000-UPM source
+   stylistic set「約物半角」用に保持する。ss09 の UI 名は Windows Unicode
+   name レコードのみ (en 0x409 / ja 0x411、`mac=False`) で書く —
+   ofl-font-baker 0.4.8+ の「Mac name レコードを出荷しない」方針に合わせる。Noto の典型的な 1000-UPM source
    scale の `XAdvance=-500` 約物は 2048-UPM では `-1024` 相当になり、
    palt-off で `-348` が base advance に焼かれ、`ss09` 有効時に残り
    `-676` が適用される。runtime `vpal` は再生成せず、縦方向の `vkrn` も

@@ -489,6 +489,29 @@ class TestInstallSS09Punctuation:
         assert "約物半角" in names
         assert _feature_record(synthetic_ttf, "GPOS", "kern")
 
+    def test_ss09_ui_name_is_windows_only(self, synthetic_ttf):
+        # ofl-font-baker 0.4.8+ strips all Macintosh name records from
+        # merged output; the post-merge ss09 label must not reintroduce
+        # platformID 1 records while keeping the en/ja Windows labels.
+        _install_ss09_punctuation_feature(
+            synthetic_ttf,
+            {"uni3001": (-25, -100)},
+        )
+
+        _, record = _feature_record(synthetic_ttf, "GSUB", "ss09")
+        ui_name_id = record.Feature.FeatureParams.UINameID
+        ui_records = [
+            name for name in synthetic_ttf["name"].names
+            if name.nameID == ui_name_id
+        ]
+        assert ui_records, "ss09 UI name records missing"
+        assert all(name.platformID == 3 for name in ui_records)
+        langs = {
+            (name.langID, name.toUnicode()) for name in ui_records
+        }
+        assert (0x409, "Half-width punctuation") in langs
+        assert (0x411, "約物半角") in langs
+
     def test_installs_ss09_alternates_with_vmtx_metrics(self, synthetic_ttf):
         vmtx = newTable("vmtx")
         vmtx.metrics = {

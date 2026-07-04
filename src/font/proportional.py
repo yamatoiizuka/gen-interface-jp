@@ -698,10 +698,17 @@ def _install_single_subst_feature(
 
 def _stylistic_set_feature_params(font: TTFont):
     """Return FeatureParams for the Japanese UI label of ss09."""
+    # mac=False: fontTools would otherwise add Macintosh (platformID 1)
+    # records alongside the Windows ones. ofl-font-baker 0.4.8+ strips all
+    # Mac name records from merged output, and this UI label is installed
+    # after the merge — keep the font consistently Windows-Unicode-only.
+    # Illustrator/InDesign read stylistic-set labels from the Windows
+    # records (en 0x409 / ja 0x411), so the visible ss09 name is unchanged.
     name_id = font["name"].addMultilingualName(
         SS09_UI_NAMES,
         ttFont=font,
         minNameID=256,
+        mac=False,
     )
     params = otTables.FeatureParamsStylisticSet()
     params.Version = 0
