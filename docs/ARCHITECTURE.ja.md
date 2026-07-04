@@ -428,6 +428,9 @@ Inter の Latin 専用挙動 (各行のグリフに応じた行高動的調整) 
 ここも `unicode-range` というユーザー向けコードポイント方針なので cmap
 起点で計画し、各 WOFF2 内で必要な alternate / positioning data は
 `fontTools.subset` の layout closure に任せる。
+サブセット WOFF2 の生成は `--jobs` に従い、`jobs > 1` ではプロセスではなく
+`ThreadPoolExecutor` を使う。macOS/pyenv の spawn 経路が webfont 全体の大量
+タスク投入でデッドロックしたため (issue #33)。
 
 ### ストラテジー
 

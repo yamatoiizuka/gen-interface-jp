@@ -435,6 +435,9 @@ along Unicode ranges and emits one `@font-face` rule per slice with a
 references. The plan is cmap/codepoint-driven because `unicode-range` is a
 user-facing character policy; `fontTools.subset` performs the layout closure
 needed to retain referenced alternates and positioning data inside each WOFF2.
+Subset WOFF2 generation honors `--jobs`; for `jobs > 1` it uses
+`ThreadPoolExecutor` rather than process workers because the macOS/pyenv
+spawn path deadlocked under the full webfont task fan-out (issue #33).
 
 ### Strategies
 
