@@ -362,6 +362,36 @@ def _subset_worker(task: tuple[str, str, tuple[int, ...]]) -> tuple[str, int]:
     return out, out_path.stat().st_size
 
 
+def _run_subset_tasks(tasks: list[tuple[str, str, tuple[int, ...]]], jobs: int, out_dir: Path) -> dict[str, int]:
+    """Build WOFF2 subsets, using threads when multiple workers are requested.
+
+    Issue #33: ProcessPoolExecutor hangs on macOS/pyenv spawn when many
+    fontTools subset tasks are submitted. Threads avoid spawn/pickle entirely,
+    while fontTools + Brotli still benefit from native-code parallelism.
+    """
+    total_tasks = len(tasks)
+    completed = 0
+    jobs = max(1, jobs)
+    results: dict[str, int] = {}
+    print(f"Building {total_tasks} subset WOFF2 files with {jobs} worker(s)...", flush=True)
+    if jobs == 1:
+        for task in tasks:
+            out, size = _subset_worker(task)
+            results[out] = size
+            completed += 1
+            print(f"[{completed:04d}/{total_tasks:04d}] {Path(out).relative_to(out_dir)} {size / 1024:.1f} KB", flush=True)
+        return results
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as executor:
+        futures = [executor.submit(_subset_worker, task) for task in tasks]
+        for future in concurrent.futures.as_completed(futures):
+            out, size = future.result()
+            results[out] = size
+            completed += 1
+            print(f"[{completed:04d}/{total_tasks:04d}] {Path(out).relative_to(out_dir)} {size / 1024:.1f} KB", flush=True)
+    return results
+
+
 def build_full_woff2(src_ttf: Path, out_path: Path) -> None:
     """Convert a TTF to a single full-cmap WOFF2.
 
@@ -372,7 +402,7 @@ def build_full_woff2(src_ttf: Path, out_path: Path) -> None:
     practice, so we only materialise it on demand for benchmarking.
     """
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    font = TTFont(src_ttf)
+    font = TTFont(src_ttf, recalcTimestamp=False)
     font.flavor = "woff2"
     font.save(out_path)
 
@@ -540,24 +570,8 @@ def build_all(args: argparse.Namespace) -> dict:
                     }
                 )
 
-    total_tasks = len(tasks)
-    completed = 0
-    jobs = max(1, args.jobs)
-    print(f"Building {total_tasks} subset WOFF2 files with {jobs} worker(s)...", flush=True)
-    if jobs == 1:
-        for task in tasks:
-            out, size = _subset_worker(task)
-            file_entries[str(Path(out).relative_to(out_dir))]["bytes"] = size
-            completed += 1
-            print(f"[{completed:04d}/{total_tasks:04d}] {Path(out).relative_to(out_dir)} {size / 1024:.1f} KB", flush=True)
-    else:
-        with concurrent.futures.ProcessPoolExecutor(max_workers=jobs) as executor:
-            futures = [executor.submit(_subset_worker, task) for task in tasks]
-            for future in concurrent.futures.as_completed(futures):
-                out, size = future.result()
-                file_entries[str(Path(out).relative_to(out_dir))]["bytes"] = size
-                completed += 1
-                print(f"[{completed:04d}/{total_tasks:04d}] {Path(out).relative_to(out_dir)} {size / 1024:.1f} KB", flush=True)
+    for out, size in _run_subset_tasks(tasks, args.jobs, out_dir).items():
+        file_entries[str(Path(out).relative_to(out_dir))]["bytes"] = size
 
     legacy_index_css = out_dir / "index.css"
     if legacy_index_css.exists():
@@ -653,14 +667,22 @@ def build(args: argparse.Namespace) -> dict:
         "bytes": full_out.stat().st_size,
     }
 
-    subset_entries: list[dict] = []
+    subset_specs: list[tuple[int, WebFontSubset, Path]] = []
+    tasks: list[tuple[str, str, tuple[int, ...]]] = []
     for index, item in enumerate(plan, 1):
         filename = f"GenInterfaceJP-Regular-{item.name}.woff2"
         out_path = out_dir / "subsets" / filename
-        build_woff2_subset(src_ttf, out_path, item.codepoints)
         write_nam(out_dir / "nam" / f"{item.name}.nam", item.codepoints, item.note)
+        subset_specs.append((index, item, out_path))
+        tasks.append((str(src_ttf), str(out_path), item.codepoints))
+
+    subset_sizes = _run_subset_tasks(tasks, args.jobs, out_dir)
+
+    subset_entries: list[dict] = []
+    for index, item, out_path in subset_specs:
         size = out_path.stat().st_size
-        print(f"[{index:03d}/{len(plan):03d}] {item.name}: {len(item.codepoints)} cps, {size / 1024:.1f} KB", flush=True)
+        if subset_sizes[str(out_path)] != size:
+            raise RuntimeError(f"Unexpected subset size mismatch for {out_path}")
         subset_entries.append(
             {
                 "name": item.name,
@@ -723,7 +745,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--all", action="store_true", help="Build Text + Display subset WOFF2 for all weights and CSS entrypoints")
     parser.add_argument("--ttf", type=Path, default=DEFAULT_TTF, help="Source Gen Interface JP Regular TTF")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUT, help="Output directory")
-    parser.add_argument("--jobs", type=int, default=max(1, min(4, os.cpu_count() or 1)), help="Parallel workers for --all subset generation")
+    parser.add_argument("--jobs", type=int, default=max(1, min(4, os.cpu_count() or 1)), help="Parallel workers for subset generation")
     parser.add_argument("--strategy", choices=["google-japanese", "jis-row"], default="google-japanese", help="Subset partitioning strategy")
     parser.add_argument("--google-japanese-slice", type=Path, default=DEFAULT_GOOGLE_JAPANESE_SLICE, help="googlefonts/nam-files slices/japanese_default.txt")
     parser.add_argument("--no-remaining", action="store_true", help="Do not add extra subsets for cmap codepoints outside the selected strategy")
