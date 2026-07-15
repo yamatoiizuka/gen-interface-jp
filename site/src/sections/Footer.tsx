@@ -72,6 +72,20 @@ export function Footer() {
                 yamatoiizuka/gen-interface-jp
               </a>
             </span>
+            <span className="footer__credit-label footer__coffee-label">
+              Buy Me a Coffee:
+            </span>
+            <span className="footer__credit-value footer__coffee-value">
+              <a
+                className="footer__coffee-link"
+                href="https://buymeacoffee.com/yamatoiizuka"
+                target="_blank"
+                rel="noreferrer"
+                aria-label="Buy Me a Coffee"
+              >
+                ☕️
+              </a>
+            </span>
           </div>
         </div>
 
