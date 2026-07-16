@@ -484,6 +484,49 @@ def _install_palt_feature(
     )
 
 
+def _install_halt_feature(
+    font: TTFont,
+    adjustments: dict[str, tuple[int, int]],
+) -> None:
+    """Install a fresh SinglePos halt feature for ``adjustments``.
+
+    Chromium enables CSS ``text-spacing-trim`` only when the font carries
+    ``halt`` (Blink HanKerning early-returns otherwise). The shipped fonts
+    bake reduced palt into hmtx and strip Noto's original ``halt``, so a new
+    one is synthesized from the ss09 residual adjustments: applying ``halt``
+    yields the same metrics as substituting the ss09 half-width alternates.
+    """
+    _install_single_pos_feature(
+        font,
+        "halt",
+        adjustments,
+        "XPlacement",
+        "XAdvance",
+        0x0001 | 0x0004,
+    )
+
+
+def _install_vhal_feature(
+    font: TTFont,
+    adjustments: dict[str, tuple[int, int]],
+) -> None:
+    """Install a fresh SinglePos vhal feature for ``adjustments``.
+
+    The feature is synthesized from the ss09 vertical residuals so Chromium's
+    ``text-spacing-trim`` works in vertical writing (Blink checks ``vhal`` in
+    vertical flows). Coverage uses vertical-form glyphs because ``vert``
+    substitution runs before positioning.
+    """
+    _install_single_pos_feature(
+        font,
+        "vhal",
+        adjustments,
+        "YPlacement",
+        "YAdvance",
+        0x0002 | 0x0008,
+    )
+
+
 def _install_vpal_feature(
     font: TTFont,
     adjustments: dict[str, tuple[int, int]],
@@ -510,8 +553,8 @@ def _install_ss09_punctuation_feature(
     to private alternate glyphs that carry the remaining palt delta in their
     outline position and hmtx advance. When vertical adjustments are supplied,
     the same helper can create vertical-form alternates whose vmtx carries a
-    vertical metric delta. The production build intentionally passes none so
-    vertical writing stays on basic full-width metrics.
+    vertical metric delta. Production builds derive these vertical adjustments
+    from Noto's baseline vhal feature.
 
     PairPos kerning is extended to alternates so enabling ``ss09`` does not
     drop existing horizontal ``kern`` pairs.
