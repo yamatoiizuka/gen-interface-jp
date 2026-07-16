@@ -81,14 +81,14 @@ FAMILIES × WEIGHTS の各組合せに対して:
   → font-baker bake: variable Noto → static TTF
                     inheritBase で designer/OFL/version を継承
                     weight だけを上書き
-  → inst を再読込し、Noto Variable の baseline palt を active 2048-UPM
-    build grid へ scale して使う
+  → inst を再読込し、Noto Variable の baseline palt / vhal を active
+    2048-UPM build grid へ scale して使う
   → ss09 約物を除き Noto の palt エントリを全量で焼き込み
     ss09 約物は 34% を base に焼き、66% を ss09 残差として保持
     (palt なしグリフはメトリクス維持)
   → make_proportional で palt → hmtx に焼き込み
-    palt/vpal/halt/vhal/vkrn を削除; 横方向の palt 残差だけを
-    final ss09 用に保持し、縦方向の vpal/vkrn 挙動は公開しない
+    palt/vpal/halt/vhal/vkrn を削除; 横方向の palt 残差と baseline vhal
+    record を final ss09 用に保持し、縦方向の vpal/vkrn 挙動は公開しない
   → _apply_tracking で advance を広げ LSB を半分シフト
     kana / 句読点は reverse cmap で分類
     ただし family["trackingIgnore"] の連続・隙間なし記号は除外
@@ -110,11 +110,11 @@ FAMILIES × WEIGHTS の各組合せに対して:
                      manufacturer / manufacturerURL を刻印
   → final TTF を一度 reload/save し、GSUB/GPOS coverage を
     merge 後の glyph ID 順に正規化
-  → merge 時の glyph rename 後も横方向の optional 約物挙動が残るよう、
-    final cmap / glyph 名に対して horizontal yakumono-only ss09 を生成;
-    縦組みは基本の全角ベタ組フォールバックとして扱う
-  → 同じ retarget 済み ss09 残差から GPOS halt を再生成して Chromium の
-    CSS text-spacing-trim を有効化; Blink は halt を必須とし、vhal / chws は
+  → final glyph 名に対して yakumono-only ss09 を生成: 横方向 alternate は
+    palt 残差、縦組み form alternate は baseline vhal の全量を使う;
+    optional spacing 無効時の縦組みは基本の全角ベタ組を維持
+  → 同じ retarget 済み ss09 調整から GPOS halt / vhal を再生成し、Chromium の
+    CSS text-spacing-trim を横組み・縦組みの両方で有効化; chws / vchw は
     意図的に生成しない
   → post-merge で U+200C、U+200D、U+FE00-U+FE0F に zero-width の
     default-ignorable 空 glyph を追加し、format 4 / format 12 cmap に載せる。
@@ -200,17 +200,20 @@ inst に対して 4 つのサブパスを in-place で実行:
    scale の `XAdvance=-500` 約物は 2048-UPM では `-1024` 相当になり、
    palt-off で `-348` が base advance に焼かれ、`ss09` 有効時に残り
    `-676` が適用される。runtime `vpal` は再生成せず、縦方向の `vkrn` も
-   削除する。production build では縦組み用 `.ss09` alternate も作らない。
-   縦組みは基本の全角ベタ組リズムを保つフォールバックとして扱う。
-   `make_proportional` では `palt`, `vpal`, `halt`, `vhal`, `vkrn` を削除するが、
-   final merge 後に `ss09` と同じ retarget 済み残差から新しい横方向の `halt`
-   を生成し、Chromium の CSS `text-spacing-trim` を有効にする (Blink は
-   `halt` を必須とする)。`vhal` と `chws` は意図的に生成しない。palt なしグリフは自動的に
+   削除する。代わりに production build は Noto の baseline `vhal` を読み、
+   縦メトリクスには base への焼き込みがないため、その全調整量を縦組み form
+   の `.ss09` alternate に適用する。`ss09` / `text-spacing-trim` 無効時は基本の
+   全角ベタ組を維持する。`make_proportional` では `palt`, `vpal`, `halt`, `vhal`,
+   `vkrn` を削除するが、final merge 後に `ss09` と同じ横・縦の調整から新しい
+   `halt` / `vhal` を生成し、Chromium の CSS `text-spacing-trim` を両方向で
+   有効にする。`chws` と `vchw` は意図的に生成しない。palt なしグリフは自動的に
    sidebearing を詰めない; 後続の明示的な spacing ルールが触らない限り
    元の `hmtx` を維持する。
    `U+30FB` (・) は Noto では `U+2027` (‧) と同じ `uni2027` を共有して
    いるため、palt ベイク前に `uni30FB` として分離する。これにより `‧` と
-   `・` は必要に応じて別々の optional spacing record を持てる。
+   `・` は必要に応じて別々の optional spacing record を持てる。source palt と
+   baseline vhal record はどちらも新しい `uni30FB` glyph へコピーし、split 後も
+   横・縦の optional spacing を維持する。
 2. **トラッキング** (`_apply_tracking`, `_apply_vertical_tracking`) — advance を `tracking` 分広げ、
    `tracking // 2` を LSB に加算してアウトラインを広がった枠の中央に
    配置。kana / 句読点はファミリー設定の `trackingKana` で別値。
@@ -305,16 +308,17 @@ release zip / npm package / site metadata と同じ project/release version を
 "https://yamatoiizuka.com"` でリリース TTF の nameID 8 / 11 を刻印。
 merge 後は final TTF を一度 fontTools で reload/save し、GSUB/GPOS coverage を
 最終 glyph order に合わせて正規化する。その後、merge 前に codepoint keyed で
-保持した横方向 record から、最小 runtime `ss09` 挙動を final cmap /
-glyph order に対して生成する。
+保持した横方向 record と baseline-vhal の縦方向 record から、最小 runtime
+`ss09` 挙動を final cmap / glyph order に対して生成する。encode された縦組み
+form は final cmap、unmapped vertical alternate は glyph 名 fallback で retarget する。
 これは `U+FF40` (｀) のように、Noto では `U+2035` と同じ `uni2035`
 を共有するが、Inter 側の `U+2035` と衝突して merge 後に
 `uni2035.orig` へ rename される glyph で必要になる。この final install は
 merge 後に行うため、保持していた残差 record も `SCALE` で換算し、live `ss09`
-alternate が光学スケール済みの Noto base と揃うようにする。同じ retarget
-済み残差を GPOS SinglePos `halt` としても生成し、Chromium の CSS
-`text-spacing-trim` を有効にする (Blink は `halt` を必須とする)。縦方向の
-`vhal` と contextual `chws` は生成しない。
+alternate が光学スケール済みの Noto base と揃うようにする。retarget 済みの
+横・縦の値は GPOS SinglePos `halt` / `vhal` としても生成し、Chromium の CSS
+`text-spacing-trim` を両方の writing mode で有効にする。contextual `chws` /
+`vchw` は生成しない。
 
 ## プロポーショナルメトリクス (`font/proportional.py`)
 
@@ -335,15 +339,17 @@ yakumono-only `ss09` として再生成する。本プロジェクトでは
 詰まり (2048-UPM build grid 上の典型的な `-1024` palt advance なら `-348`)、
 `ss09` を有効にすると従来の Noto full palt 目標まで到達する。
 production build では横方向の `ss09` target に `PALT_FEATURE_CHARS`
-(48 文字) を使う。縦方向の `ss09` target は意図的に空
-(`SS09_VERTICAL_FEATURE_CHARS = ()`, `SS09_VERTICAL_FEATURE_GLYPHS = ()`) にし、
+(48 文字) を使う。legacy の縦方向 target 定数
+(`SS09_VERTICAL_FEATURE_CHARS = ()`, `SS09_VERTICAL_FEATURE_GLYPHS = ()`) は空の
+ままだが、縦方向 coverage は Noto baseline `vhal` record から直接得る。encode
+された record は codepoint、unmapped vertical alternate は glyph 名で保持する。
 Noto の `vpal` / `vkrn` 挙動は final runtime surface へ持ち込まない。
 これにより、焼き込み済みの kana / Latin に palt が二重適用されることを
-避けながら、optional 約物 spacing は横方向の `ss09` に集約する。
+避けながら、optional 約物 spacing は横・縦の `ss09` に集約する。
 TrueType アウトラインのみ対応 (palt のベイクは `glyf` に書き戻すので
 CFF は対象外)。
 Inter との merge では base 側 glyph が rename されることがあるため、
-ビルドは merge 前に横方向の残差を codepoint 単位で保持し、merge 後の
+ビルドは merge 前に横方向の残差と encode 済み vhal record を codepoint 単位で保持し、merge 後の
 final cmap / glyph order に対して retarget する。この codepoint retarget は
 final cmap に encode された glyph だけが対象で、cmap に載らない alternate を
 merge rename 後も残す必要がある場合は `_retarget_named_adjustments` の
@@ -358,15 +364,14 @@ base metrics は merge 時に一度だけ scale
 レコードのインデックスを動かすので、各 LangSys の `FeatureIndex` 配列を
 生き残ったレコードに対して再キーする必要がある。feature 削除後は、どの
 生存 feature からも参照されない lookup だけを pruning する; 共有 lookup は
-残す。横方向の `kern` は GPOS に残し、`vkrn` は削除するため、
-縦組みは基本ボディグリッド上で組まれる。横方向の optional 約物は
-GSUB 側で扱う: `_install_ss09_punctuation_feature` が従来の palt 残差から
-`.ss09` metric alternate を作り、UI 名「約物半角」の `ss09` stylistic set
-を生成する。既存の横方向 PairPos kerning は `.ss09` alternate にも拡張するため、
-substitution 後も `kern` は効き続ける。横方向のみの alternate は元 glyph の
-`vmtx` record もコピーするため、保存後の font でも vertical metrics table の
-長さが拡張後の glyph order と揃う。production build ではこの helper に
-縦方向の調整を渡さないので、`ss09` は縦組みでは効かない。
+残す。横方向の `kern` は GPOS に残し、`vkrn` は削除するため、default の
+縦組みは基本ボディグリッド上で組まれる。optional 約物は GSUB 側で扱う:
+`_install_ss09_punctuation_feature` が従来の palt 残差から横方向 `.ss09` metric
+alternate を作り、baseline `vhal` から縦組み form の `vmtx` delta を持つ
+alternate を作って、UI 名「約物半角」の `ss09` stylistic set を生成する。
+既存の横方向 PairPos kerning は `.ss09` alternate にも拡張するため、substitution
+後も `kern` は効き続ける。横方向 alternate は元 glyph の `vmtx` record を
+コピーし、縦組み form alternate は vhal の advance / placement 全量を適用する。
 `ss09` を追加した後は GSUB `FeatureList` を
 `FeatureTag` 順に戻し、LangSys の feature index を再マップする。lookup order
 は変更しない。
@@ -436,9 +441,9 @@ Inter の Latin 専用挙動 (各行のグリフに応じた行高動的調整) 
 ここも `unicode-range` というユーザー向けコードポイント方針なので cmap
 起点で計画し、各 WOFF2 内で必要な alternate / positioning data は
 `fontTools.subset` の layout closure に任せる。
-この layout closure により final font の GSUB `ss09` と GPOS `halt` は該当
-subset に保持され、出荷 webfont でも Chromium の `text-spacing-trim` が有効に
-なる。`vhal` と `chws` は引き続き存在しない。
+この layout closure により final font の GSUB `ss09` と GPOS `halt` / `vhal` は
+該当 subset に保持され、出荷 webfont でも Chromium の `text-spacing-trim` が
+両 writing mode で有効になる。`chws` と `vchw` は引き続き存在しない。
 サブセット WOFF2 の生成は `--jobs` に従い、`jobs > 1` ではプロセスではなく
 `ThreadPoolExecutor` を使う。macOS/pyenv の spawn 経路が webfont 全体の大量
 タスク投入でデッドロックしたため (issue #33)。
@@ -528,7 +533,7 @@ PYTHONPATH=src python3 -m pytest        # 全テスト (~35 秒)
 
 テストは表面ごとに `tests/` 直下に分割:
 
-- **`tests/conftest.py`** — 共有フィクスチャ: 実 palt / vpal / vert / cmap データ
+- **`tests/conftest.py`** — 共有フィクスチャ: 実 palt / vpal / vhal / vert / cmap データ
   が必要なテスト用に Noto Variable のサブセットをセッション単位でキャッシュ;
   全グリフ走査が必要な mutation テスト用には `FontBuilder` で組み立てた
   最小 TrueType (Noto 17000 グリフを毎回触るのは無駄)。
@@ -541,7 +546,7 @@ PYTHONPATH=src python3 -m pytest        # 全テスト (~35 秒)
   `_add_default_ignorable_glyphs`,
   `_apply_tracking`, `_apply_vertical_tracking`, `_apply_glyph_spacing`, `_glyphs_for_codepoints`,
   `_split_cmap_codepoint_glyph`、明示的な palt/ss09 spacing 方針、
-  縦方向 ss09 無効化ポリシーの確認、final TTF integrity validation、
+  baseline vhal と縦方向 ss09/vhal retarget、final TTF integrity validation、
   Thin / ExtraBold 用の InterVariable edge instance source 選択。
 - **`src/font/verify_edge_instances.py`** — Thin / ExtraBold のビルド後検証。
   生成された InterVariable static instance が vendor static と同じ cmap /
@@ -566,7 +571,7 @@ PYTHONPATH=src python3 -m pytest        # 全テスト (~35 秒)
 
 | ファイル | テスト数 | 検証内容 |
 |---|---|---|
-| `test_font_build.py` | 122 | CLI build selection / parallel intermediate path separation、和文 vertical body scaling/tracking、UPM 換算ポリシー、project-version metadata forwarding、グリフ名パース、reverse-cmap kana / 句読点分類、CJK 分類、GSUB/GPOS 走査、baseline palt 方針、x-scale、bbox 除去、default-ignorable zero-width glyph 追加、tracking、ss09/halt feature の retarget、final TTF integrity validation、final runtime feature scaling、InterVariable edge instance 互換性 |
+| `test_font_build.py` | 124 | CLI build selection / parallel intermediate path separation、和文 vertical body scaling/tracking、UPM 換算ポリシー、project-version metadata forwarding、グリフ名パース、reverse-cmap kana / 句読点分類、CJK 分類、GSUB/GPOS 走査、U+30FB split 伝播を含む baseline palt/vhal 方針、x-scale、bbox 除去、default-ignorable zero-width glyph 追加、tracking、ss09/halt/vhal feature の retarget、final TTF integrity validation、final runtime feature scaling、InterVariable edge instance 互換性 |
 | `test_proportional.py` | 39 | palt/vpal 抽出、SinglePos lookup の加算読み取り、グリフ平行移動、vkrn を含む GPOS feature 削除、runtime-palt/vpal helper coverage + base/residual 分割 + optional squeeze helper、ss09 生成 + 縦方向 no-op を含む shaping |
 | `test_release.py` | 2 | GitHub アセット URL 契約、npm パッケージレイアウト (files glob、license、README、self-host/CDN CSS root 配置) |
 | `test_webfont_build.py` | 42 | 範囲マージ / 重複除去、5 桁 hex 含む unicode-range、JIS 区マッピング、サブセット計画の配置 / 非重複 / 完全カバレッジ、ストラテジーパーサーのエッジケース |

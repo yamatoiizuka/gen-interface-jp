@@ -31,6 +31,7 @@ from font.build import (
     _final_output_metadata,
     _get_vert_alternates,
     _get_baseline_palt,
+    _get_baseline_vhal,
     _glyphs_for_codepoints,
     _glyph_codepoint,
     _intermediate_paths,
@@ -1131,6 +1132,44 @@ class TestPaltSymbolPolicy:
         ) == {"A": (-12, -34)}
         assert "vhal" not in _layout_feature_tags(refreshed, "GPOS")
 
+    def test_refresh_ss09_installs_retargeted_vhal(self, tmp_path):
+        inter_path = _default_inter_static_path(FAMILIES["normal"], "Regular")
+        if not Path(inter_path).is_file():
+            pytest.skip(f"Inter font not found at {inter_path}")
+        final_path = tmp_path / "merged.ttf"
+        font = TTFont(inter_path)
+        font.save(final_path)
+
+        _refresh_ss09_feature_after_merge(
+            str(final_path),
+            {0x41: (-12, -34)},
+            {0x41: (0, -50)},
+            {},
+        )
+
+        refreshed = TTFont(final_path)
+        assert _read_single_pos_feature(
+            refreshed,
+            "vhal",
+            "YPlacement",
+            "YAdvance",
+        ) == {"A": (0, -50)}
+        vhal_record = next(
+            record
+            for record in refreshed["GPOS"].table.FeatureList.FeatureRecord
+            if record.FeatureTag == "vhal"
+        )
+        vhal_lookups = [
+            refreshed["GPOS"].table.LookupList.Lookup[index]
+            for index in vhal_record.Feature.LookupListIndex
+        ]
+        assert vhal_lookups
+        assert all(
+            subtable.ValueFormat == 0x000A
+            for lookup in vhal_lookups
+            for subtable in lookup.SubTable
+        )
+
     def test_runtime_palt_keeps_reduced_base_metrics(self):
         assert RUNTIME_PALT_BASE_SCALE == 0.34
         assert _runtime_palt_residual_adjustment((-250, -500)) == (-165, -330)
@@ -1141,10 +1180,34 @@ class TestPaltSymbolPolicy:
             assert family["runtimePalt"] == PALT_FEATURE_CHARS
             assert "runtimeVpal" not in family
 
-    def test_vertical_yakumono_ss09_is_disabled(self):
+    def test_vertical_yakumono_uses_baseline_vhal(self):
+        adjustments = _get_baseline_vhal()
+        source = TTFont(NOTO_VARIABLE)
+        try:
+            encoded_glyphs = set((source.getBestCmap() or {}).values())
+        finally:
+            source.close()
+
+        assert adjustments
+        assert all(y_advance < 0 for _, y_advance in adjustments.values())
+        assert any(glyph_name in encoded_glyphs for glyph_name in adjustments)
+        assert any(glyph_name not in encoded_glyphs for glyph_name in adjustments)
+
+        # These legacy policy constants stay empty because production vertical
+        # ss09/vhal coverage now comes directly from Noto's baseline vhal.
         assert SS09_VERTICAL_FEATURE_CHARS == ()
         assert SS09_VERTICAL_FEATURE_GLYPHS == ()
         assert SS09_SYNTHETIC_VERTICAL_ADJUSTMENTS == {}
+
+    def test_middle_dot_split_inherits_baseline_vhal(self):
+        adjustments = dict(_get_baseline_vhal())
+        split_source = "uni2027"
+
+        assert split_source in adjustments
+        if split_source in adjustments:
+            adjustments["uni30FB"] = adjustments[split_source]
+
+        assert adjustments["uni30FB"] == adjustments[split_source]
 
     def test_vertical_tracking_is_normal_only(self):
         assert NORMAL_VERTICAL_TRACKING == 9

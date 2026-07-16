@@ -81,14 +81,14 @@ For each (family, weight) in FAMILIES × WEIGHTS:
   → font-baker bake: variable Noto → static TTF
                     inheritBase passes designer/OFL/version
                     through; only weight is stamped
-  → reload inst, read baseline palt from Noto Variable and scale it to the
-    active 2048-UPM build grid
+  → reload inst, read baseline palt and vhal from Noto Variable and scale
+    both to the active 2048-UPM build grid
   → bake Noto palt at full strength except ss09 yakumono,
     whose palt is split into a 34% baked base + 66% ss09 residual
     (glyphs without palt keep metrics)
   → make_proportional bakes palt → hmtx and removes palt/vpal/halt/vhal/vkrn;
-    horizontal palt residuals are held for final ss09 alternates while
-    vertical vpal/vkrn behavior is not exposed
+    horizontal palt residuals and baseline vhal records are held for final
+    ss09 alternates while vertical vpal/vkrn behavior is not exposed
   → _apply_tracking widens advances + half-balances LSB
     using reverse-cmap kana / punctuation classification
     except repeatable no-gap symbols in family["trackingIgnore"]
@@ -109,12 +109,13 @@ For each (family, weight) in FAMILIES × WEIGHTS:
                      manufacturer / manufacturerURL stamped
   → reload/save final TTF once so GSUB/GPOS coverage tables are ordered
     by the final merged glyph IDs
-  → install horizontal yakumono-only ss09 against the final cmap / glyph names
-    so merge-time glyph renames keep optional horizontal yakumono behavior;
-    vertical writing remains a basic full-width fallback
-  → re-synthesize GPOS halt from those same retargeted ss09 residuals so
-    Chromium CSS text-spacing-trim works; Blink requires halt, while vhal
-    and chws are intentionally absent
+  → install yakumono-only ss09 against final glyph names: horizontal
+    alternates use palt residuals, while vertical-form alternates use full
+    baseline vhal deltas; without optional spacing, vertical writing stays
+    on the basic full-width grid
+  → re-synthesize GPOS halt and vhal from those same retargeted ss09 deltas
+    so Chromium CSS text-spacing-trim works in horizontal and vertical flows;
+    chws and vchw are intentionally absent
   → add post-merge default-ignorable zero-width glyphs for U+200C, U+200D,
     and U+FE00-U+FE0F to format 4 / format 12 cmap tables. These empty glyphs
     prevent literal composers from rendering tofu for emoji variation
@@ -199,19 +200,23 @@ Four sub-passes, all in-place on the inst:
    `XAdvance=-500` yakumono records at the 1000-UPM source scale, the
    equivalent 2048-UPM record is `-1024`; palt-off gets `-348` baked into
    the base advance and enabling `ss09` applies the remaining `-676`.
-   Runtime `vpal` is not reinstalled, vertical `vkrn` is stripped, and
-   production builds do not create vertical `.ss09` alternates. Vertical
-   writing is treated as a fallback path that should keep basic full-width
-   rhythm. `make_proportional` strips `palt`, `vpal`, `halt`, `vhal`, and
-   `vkrn`; after the final merge, a fresh horizontal `halt` is synthesized
-   from the same retargeted residuals as `ss09` so Chromium can apply CSS
-   `text-spacing-trim` (Blink requires `halt`). `vhal` and `chws` remain
-   intentionally absent. Glyphs without palt entries are not
+   Runtime `vpal` is not reinstalled and vertical `vkrn` is stripped.
+   Production builds instead read Noto's baseline `vhal`: its full adjustment
+   is applied to vertical-form `.ss09` alternates because vertical metrics have
+   no baked base fraction. Without `ss09` or `text-spacing-trim`, vertical
+   writing remains on the basic full-width grid. `make_proportional` strips
+   `palt`, `vpal`, `halt`, `vhal`, and `vkrn`; after the final merge, fresh
+   `halt` and `vhal` features are synthesized from the same horizontal and
+   vertical adjustments as `ss09` so Chromium can apply CSS
+   `text-spacing-trim` in both flows. `chws` and `vchw` remain intentionally
+   absent. Glyphs without palt entries are not
    automatically sidebearing-squeezed; they keep their original
    `hmtx` unless a later explicit spacing rule touches them.
    `U+30FB` (・) is split from Noto's shared `uni2027` glyph before palt
    baking so `U+2027` (‧) and `U+30FB` (・) can carry separate optional
-   spacing records when needed.
+   spacing records when needed. Both the source palt and baseline vhal record
+   are copied to the new `uni30FB` glyph so the split preserves horizontal and
+   vertical optional spacing.
 2. **Tracking** (`_apply_tracking`, `_apply_vertical_tracking`) — advance grows by `tracking`;
    `tracking // 2` is added to LSB so the outline sits centred in the
    wider slot. Kana / punctuation get a separate `trackingKana` value
@@ -313,15 +318,17 @@ prefix. `output.manufacturer = "Yamato Iizuka"`, `output.manufacturerURL =
 After the merge, the TTF is reloaded and saved once with fontTools so
 GSUB/GPOS coverage tables are sorted against the final merged glyph order.
 Then the minimal runtime `ss09` behavior is rebuilt from codepoint-keyed
-horizontal records captured before the merge. This matters
+horizontal records and baseline-vhal vertical records captured before the
+merge. Encoded vertical forms are retargeted through the final cmap, while
+unmapped vertical alternates use the surviving glyph-name fallback. This matters
 for shared Noto glyphs such as `U+FF40` (｀), which uses Noto's `uni2035`
 before merge but may be renamed to `uni2035.orig` when Inter also provides
 `U+2035`. Because this final install happens after the merge, the saved
 residual records are also scaled by `SCALE` so live `ss09` alternates match
-the optically scaled Noto base. The same retargeted residuals are installed
-as a GPOS `halt` SinglePos feature so Chromium's CSS `text-spacing-trim`
-activates; Blink requires `halt`. No vertical `vhal` or contextual `chws`
-feature is created.
+the optically scaled Noto base. The retargeted horizontal and vertical values
+are also installed as GPOS SinglePos `halt` and `vhal` features so Chromium's
+CSS `text-spacing-trim` activates in either writing mode. Contextual `chws`
+and `vchw` are not created.
 
 ## Proportional Metrics (`font/proportional.py`)
 
@@ -344,15 +351,17 @@ Inter merge. The project uses
 tightened (`-348` for the common `-1024` palt advance on the 2048-UPM build
 grid) while enabling `ss09` reaches the former full Noto palt target.
 The production build uses `PALT_FEATURE_CHARS` (48 chars) for horizontal
-`ss09` targets. Vertical `ss09` targets are intentionally empty
-(`SS09_VERTICAL_FEATURE_CHARS = ()`, `SS09_VERTICAL_FEATURE_GLYPHS = ()`),
-and Noto `vpal` / `vkrn` behavior is not carried into the final runtime
-surface. This avoids double-applying palt to baked kana / Latin while keeping
-optional yakumono spacing under horizontal `ss09`. Only TrueType outlines are supported
+`ss09` targets. The legacy vertical target constants stay empty
+(`SS09_VERTICAL_FEATURE_CHARS = ()`, `SS09_VERTICAL_FEATURE_GLYPHS = ()`)
+because vertical coverage comes directly from Noto's baseline `vhal` records.
+Encoded records are captured by codepoint and unmapped vertical alternates by
+glyph name. Noto `vpal` / `vkrn` behavior is not carried into the final runtime
+surface. This avoids double-applying palt to baked kana / Latin while exposing
+optional yakumono spacing through horizontal and vertical `ss09`. Only TrueType outlines are supported
 — palt baking writes back to `glyf`, not CFF.
 Because the Inter merge can rename colliding base glyphs, the build captures
-horizontal residuals by codepoint before the merge, then retargets them
-against the final cmap / glyph order afterward. This codepoint retargeting
+horizontal residuals and encoded vhal records by codepoint before the merge,
+then retargets them against the final cmap / glyph order afterward. This codepoint retargeting
 only applies to glyphs encoded in the final cmap; named fallback records use
 `_retarget_named_adjustments` when an unencoded alternate needs to survive a
 merge rename. Those final records are scaled by the final Noto optical scale
@@ -366,16 +375,15 @@ Removing a record changes the indices of every later record, so each
 LangSys's `FeatureIndex` array is re-keyed against the surviving records.
 After feature removal, lookup indices are pruned only when no surviving
 feature references them; shared lookups stay intact. Horizontal `kern`
-remains in GPOS, while `vkrn` is removed so vertical writing stays on the
-basic body grid. Horizontal optional yakumono is
-handled as GSUB: `_install_ss09_punctuation_feature` creates `.ss09` metric
-alternates from the former palt residual and installs an `ss09` stylistic set
+remains in GPOS, while `vkrn` is removed so default vertical writing stays on
+the basic body grid. Optional yakumono is handled as GSUB:
+`_install_ss09_punctuation_feature` creates horizontal `.ss09` metric
+alternates from the former palt residual and vertical-form alternates whose
+`vmtx` deltas come from baseline `vhal`, then installs an `ss09` stylistic set
 with the UI name "約物半角". Existing horizontal PairPos kerning is extended
 to those alternates so `kern` continues to apply after substitution.
-Horizontal-only alternates copy their source glyphs' `vmtx` records so saved
-fonts keep vertical metrics table length in sync with the expanded glyph
-order. Production builds pass no vertical adjustments to this helper, so
-`ss09` has no vertical-writing effect. After `ss09` is
+Horizontal alternates copy their source glyphs' `vmtx` records, while
+vertical-form alternates apply the full vhal advance/placement delta. After `ss09` is
 appended, the GSUB `FeatureList` is sorted back into `FeatureTag` order and
 all LangSys feature indices are remapped; lookup order is left untouched.
 
@@ -444,9 +452,10 @@ along Unicode ranges and emits one `@font-face` rule per slice with a
 references. The plan is cmap/codepoint-driven because `unicode-range` is a
 user-facing character policy; `fontTools.subset` performs the layout closure
 needed to retain referenced alternates and positioning data inside each WOFF2.
-That layout closure preserves the final font's GSUB `ss09` and GPOS `halt`
-records in the relevant subsets, enabling Chromium `text-spacing-trim` in
-the shipped webfonts; `vhal` and `chws` remain absent.
+That layout closure preserves the final font's GSUB `ss09` and GPOS
+`halt`/`vhal` records in the relevant subsets, enabling Chromium
+`text-spacing-trim` in both writing modes in the shipped webfonts; `chws` and
+`vchw` remain absent.
 Subset WOFF2 generation honors `--jobs`; for `jobs > 1` it uses
 `ThreadPoolExecutor` rather than process workers because the macOS/pyenv
 spawn path deadlocked under the full webfont task fan-out (issue #33).
@@ -539,7 +548,7 @@ PYTHONPATH=src python3 -m pytest        # full suite (~35s)
 Tests live under `tests/`, split by surface:
 
 - **`tests/conftest.py`** — shared fixtures: a session-cached subset of
-  Noto Variable for tests that need real palt / vpal / vert / cmap data, and a
+  Noto Variable for tests that need real palt / vpal / vhal / vert / cmap data, and a
   hand-built minimal TrueType (`FontBuilder`) for whole-font mutation
   tests where 17 000 Noto glyphs would be wasteful.
 - **`tests/test_font_build.py`** — CLI build selection / parallel intermediate
@@ -552,7 +561,7 @@ Tests live under `tests/`, split by surface:
   `_add_default_ignorable_glyphs`,
   `_apply_tracking`, `_apply_vertical_tracking`, `_apply_glyph_spacing`, `_glyphs_for_codepoints`,
   `_split_cmap_codepoint_glyph`, explicit palt/ss09 spacing policy, vertical
-  ss09-disabled policy checks, final TTF integrity validation, and
+  baseline-vhal and ss09/vhal retarget checks, final TTF integrity validation, and
   InterVariable edge-instance source selection for Thin / ExtraBold.
 - **`src/font/verify_edge_instances.py`** — post-build verification for
   Thin / ExtraBold edge outputs. Confirms the generated InterVariable static
@@ -577,7 +586,7 @@ Tests live under `tests/`, split by surface:
 
 | File | Tests | Verifies |
 |---|---|---|
-| `test_font_build.py` | 122 | CLI build selection and parallel intermediate path separation, Japanese vertical body scaling/tracking, UPM scaling policy, project-version metadata forwarding, glyph-name parsing, reverse-cmap kana / punctuation classification, CJK classification, GSUB/GPOS walk, baseline palt policy, x-scale, bbox strip, default-ignorable zero-width glyph insertion, tracking, final TTF integrity validation, ss09/halt feature retargeting, final runtime feature scaling, InterVariable edge-instance compatibility |
+| `test_font_build.py` | 124 | CLI build selection and parallel intermediate path separation, Japanese vertical body scaling/tracking, UPM scaling policy, project-version metadata forwarding, glyph-name parsing, reverse-cmap kana / punctuation classification, CJK classification, GSUB/GPOS walk, baseline palt/vhal policy including U+30FB split propagation, x-scale, bbox strip, default-ignorable zero-width glyph insertion, tracking, final TTF integrity validation, ss09/halt/vhal feature retargeting, final runtime feature scaling, InterVariable edge-instance compatibility |
 | `test_proportional.py` | 39 | palt/vpal extraction, cumulative SinglePos lookup reading, glyph translation, GPOS feature removal including vkrn, runtime-palt/vpal helper coverage + base/residual split + optional squeeze helper, ss09 construction + shaping including vertical no-op coverage |
 | `test_release.py` | 2 | GitHub asset URL contract, npm package layout (files glob, license, README, self-host/CDN CSS entrypoints at root) |
 | `test_webfont_build.py` | 42 | Range merge / dedup, unicode-range formatting incl. 5-digit, JIS row mapping, subset plan placement / non-overlap / coverage, strategy parser edge cases |

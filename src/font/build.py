@@ -41,7 +41,9 @@ from project_metadata import project_version as read_project_version
 from .proportional import (
     _install_halt_feature,
     _install_ss09_punctuation_feature,
+    _install_vhal_feature,
     _read_palt,
+    _read_single_pos_feature,
     _remove_prop_features,
     _scale_position_adjustment,
     make_proportional,
@@ -177,10 +179,11 @@ RUNTIME_PALT_BASE_SCALE = 0.34
 # abruptly. Use the baseline vendor palt as the source of truth for every
 # weight, matching the historical Gen Interface JP spacing policy.
 _baseline_palt_cache: dict[str, tuple[int, int]] | None = None
+_baseline_vhal_cache: dict[str, tuple[int, int]] | None = None
 
 # Vertical writing is treated as a fallback path for this UI-focused family.
-# Keep it on basic full-width metrics: do not expose Noto vpal/vkrn behavior
-# through runtime features, and do not add vertical ss09 alternates.
+# Keep default metrics on a basic full-width grid, but derive optional vertical
+# ss09/vhal behavior directly from Noto's baseline vhal records.
 SS09_VERTICAL_FEATURE_CHARS: tuple[str, ...] = ()
 SS09_VERTICAL_FEATURE_GLYPHS: tuple[str, ...] = ()
 SS09_SYNTHETIC_VERTICAL_ADJUSTMENTS: dict[str, tuple[int, int]] = {}
@@ -1209,6 +1212,25 @@ def _get_baseline_palt() -> dict[str, tuple[int, int]]:
     return _baseline_palt_cache
 
 
+def _get_baseline_vhal() -> dict[str, tuple[int, int]]:
+    """Read Noto's baseline vhal feature once and reuse it for every weight."""
+    global _baseline_vhal_cache
+    if _baseline_vhal_cache is None:
+        source = TTFont(NOTO_VARIABLE)
+        try:
+            _baseline_vhal_cache = dict(
+                _read_single_pos_feature(
+                    source,
+                    "vhal",
+                    "YPlacement",
+                    "YAdvance",
+                )
+            )
+        finally:
+            source.close()
+    return _baseline_vhal_cache
+
+
 def _runtime_palt_residual_adjustment(
     adjustment: tuple[int, int],
 ) -> tuple[int, int]:
@@ -1296,12 +1318,13 @@ def _refresh_ss09_feature_after_merge(
     codepoint-keyed optional punctuation behavior against the final cmap so
     characters such as U+FF40 (｀), which shares Noto's ``uni2035`` glyph before
     merge, keep their ss09 adjustment on the renamed final glyph. Horizontal
-    palt is intentionally not reinstalled here. Production builds also pass
-    no vertical adjustments, so vertical ss09 remains disabled.
+    palt is intentionally not reinstalled here. Production vertical
+    adjustments come from Noto's baseline ``vhal`` and are retargeted by
+    codepoint or surviving glyph name before building vertical ss09 alternates.
 
-    The same codepoint-retargeted adjustments are also installed as GPOS
-    ``halt`` so Chromium's ``text-spacing-trim`` works (Blink requires
-    ``halt``). A vertical ``vhal`` feature is intentionally not created.
+    The same retargeted horizontal and vertical adjustments are also installed
+    as GPOS ``halt`` and ``vhal`` so Chromium's ``text-spacing-trim`` works in
+    horizontal and vertical flows.
     """
     font = TTFont(final_path)
     ss09_adjustments = _retarget_feature_adjustments(
@@ -1323,6 +1346,8 @@ def _refresh_ss09_feature_after_merge(
         ss09_vertical_adjustments,
     )
     _install_halt_feature(font, ss09_adjustments)
+    if ss09_vertical_adjustments:
+        _install_vhal_feature(font, ss09_vertical_adjustments)
     font.save(final_path)
 
 
@@ -1677,6 +1702,23 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
             palt_data,
         )
     )
+    vhal_data = _scale_design_adjustments(dict(_get_baseline_vhal()), font_upm)
+    # U+30FB was split from Noto's shared uni2027 glyph above; preserve the
+    # source glyph's vertical half-width adjustment on the new uni30FB glyph.
+    if split_source in vhal_data:
+        vhal_data["uni30FB"] = vhal_data[split_source]
+    source_cmap = font.getBestCmap() or {}
+    ss09_vertical_by_codepoint = {
+        cp: vhal_data[glyph_name]
+        for cp, glyph_name in source_cmap.items()
+        if glyph_name in vhal_data
+    }
+    mapped_vhal_glyphs = set(source_cmap.values())
+    ss09_vertical_by_glyph = {
+        glyph_name: value
+        for glyph_name, value in vhal_data.items()
+        if glyph_name not in mapped_vhal_glyphs
+    }
 
     # Bake Noto palt entries at full strength except ss09 yakumono, which
     # receive a reduced baked base. Their residual is captured above and later
@@ -1751,8 +1793,8 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
     _refresh_ss09_feature_after_merge(
         final_path,
         _scale_feature_adjustments(ss09_punctuation_by_codepoint, SCALE),
-        {},
-        {},
+        _scale_feature_adjustments(ss09_vertical_by_codepoint, SCALE),
+        _scale_feature_adjustments(ss09_vertical_by_glyph, SCALE),
     )
     default_ignorables_added = _add_default_ignorable_glyphs_to_ttf(final_path)
     if default_ignorables_added:
