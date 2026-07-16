@@ -484,6 +484,28 @@ def _install_palt_feature(
     )
 
 
+def _install_halt_feature(
+    font: TTFont,
+    adjustments: dict[str, tuple[int, int]],
+) -> None:
+    """Install a fresh SinglePos halt feature for ``adjustments``.
+
+    Chromium enables CSS ``text-spacing-trim`` only when the font carries
+    ``halt`` (Blink HanKerning early-returns otherwise). The shipped fonts
+    bake reduced palt into hmtx and strip Noto's original ``halt``, so a new
+    one is synthesized from the ss09 residual adjustments: applying ``halt``
+    yields the same metrics as substituting the ss09 half-width alternates.
+    """
+    _install_single_pos_feature(
+        font,
+        "halt",
+        adjustments,
+        "XPlacement",
+        "XAdvance",
+        0x0001 | 0x0004,
+    )
+
+
 def _install_vpal_feature(
     font: TTFont,
     adjustments: dict[str, tuple[int, int]],

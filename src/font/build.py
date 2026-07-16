@@ -39,6 +39,7 @@ from fontTools.varLib import instancer
 from merge_fonts import merge_fonts, parse_codepoint_list
 from project_metadata import project_version as read_project_version
 from .proportional import (
+    _install_halt_feature,
     _install_ss09_punctuation_feature,
     _read_palt,
     _remove_prop_features,
@@ -1297,6 +1298,10 @@ def _refresh_ss09_feature_after_merge(
     merge, keep their ss09 adjustment on the renamed final glyph. Horizontal
     palt is intentionally not reinstalled here. Production builds also pass
     no vertical adjustments, so vertical ss09 remains disabled.
+
+    The same codepoint-retargeted adjustments are also installed as GPOS
+    ``halt`` so Chromium's ``text-spacing-trim`` works (Blink requires
+    ``halt``). A vertical ``vhal`` feature is intentionally not created.
     """
     font = TTFont(final_path)
     ss09_adjustments = _retarget_feature_adjustments(
@@ -1317,6 +1322,7 @@ def _refresh_ss09_feature_after_merge(
         ss09_adjustments,
         ss09_vertical_adjustments,
     )
+    _install_halt_feature(font, ss09_adjustments)
     font.save(final_path)
 
 

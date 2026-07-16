@@ -113,6 +113,9 @@ FAMILIES × WEIGHTS の各組合せに対して:
   → merge 時の glyph rename 後も横方向の optional 約物挙動が残るよう、
     final cmap / glyph 名に対して horizontal yakumono-only ss09 を生成;
     縦組みは基本の全角ベタ組フォールバックとして扱う
+  → 同じ retarget 済み ss09 残差から GPOS halt を再生成して Chromium の
+    CSS text-spacing-trim を有効化; Blink は halt を必須とし、vhal / chws は
+    意図的に生成しない
   → post-merge で U+200C、U+200D、U+FE00-U+FE0F に zero-width の
     default-ignorable 空 glyph を追加し、format 4 / format 12 cmap に載せる。
     Gen Interface JP に解決された絵文字兼用テキスト記号の直後に variation
@@ -199,8 +202,10 @@ inst に対して 4 つのサブパスを in-place で実行:
    `-676` が適用される。runtime `vpal` は再生成せず、縦方向の `vkrn` も
    削除する。production build では縦組み用 `.ss09` alternate も作らない。
    縦組みは基本の全角ベタ組リズムを保つフォールバックとして扱う。
-   final font では `palt`, `vpal`, `halt`, `vhal`, `vkrn` を削除し、
-   optional 約物 spacing は横方向の `ss09` だけで公開する。palt なしグリフは自動的に
+   `make_proportional` では `palt`, `vpal`, `halt`, `vhal`, `vkrn` を削除するが、
+   final merge 後に `ss09` と同じ retarget 済み残差から新しい横方向の `halt`
+   を生成し、Chromium の CSS `text-spacing-trim` を有効にする (Blink は
+   `halt` を必須とする)。`vhal` と `chws` は意図的に生成しない。palt なしグリフは自動的に
    sidebearing を詰めない; 後続の明示的な spacing ルールが触らない限り
    元の `hmtx` を維持する。
    `U+30FB` (・) は Noto では `U+2027` (‧) と同じ `uni2027` を共有して
@@ -306,7 +311,10 @@ glyph order に対して生成する。
 を共有するが、Inter 側の `U+2035` と衝突して merge 後に
 `uni2035.orig` へ rename される glyph で必要になる。この final install は
 merge 後に行うため、保持していた残差 record も `SCALE` で換算し、live `ss09`
-alternate が光学スケール済みの Noto base と揃うようにする。
+alternate が光学スケール済みの Noto base と揃うようにする。同じ retarget
+済み残差を GPOS SinglePos `halt` としても生成し、Chromium の CSS
+`text-spacing-trim` を有効にする (Blink は `halt` を必須とする)。縦方向の
+`vhal` と contextual `chws` は生成しない。
 
 ## プロポーショナルメトリクス (`font/proportional.py`)
 
@@ -428,6 +436,9 @@ Inter の Latin 専用挙動 (各行のグリフに応じた行高動的調整) 
 ここも `unicode-range` というユーザー向けコードポイント方針なので cmap
 起点で計画し、各 WOFF2 内で必要な alternate / positioning data は
 `fontTools.subset` の layout closure に任せる。
+この layout closure により final font の GSUB `ss09` と GPOS `halt` は該当
+subset に保持され、出荷 webfont でも Chromium の `text-spacing-trim` が有効に
+なる。`vhal` と `chws` は引き続き存在しない。
 サブセット WOFF2 の生成は `--jobs` に従い、`jobs > 1` ではプロセスではなく
 `ThreadPoolExecutor` を使う。macOS/pyenv の spawn 経路が webfont 全体の大量
 タスク投入でデッドロックしたため (issue #33)。
@@ -555,7 +566,7 @@ PYTHONPATH=src python3 -m pytest        # 全テスト (~35 秒)
 
 | ファイル | テスト数 | 検証内容 |
 |---|---|---|
-| `test_font_build.py` | 120 | CLI build selection / parallel intermediate path separation、和文 vertical body scaling/tracking、UPM 換算ポリシー、project-version metadata forwarding、グリフ名パース、reverse-cmap kana / 句読点分類、CJK 分類、GSUB/GPOS 走査、baseline palt 方針、x-scale、bbox 除去、default-ignorable zero-width glyph 追加、tracking、final TTF integrity validation、ss09 feature の retarget、final runtime feature scaling、InterVariable edge instance 互換性 |
+| `test_font_build.py` | 122 | CLI build selection / parallel intermediate path separation、和文 vertical body scaling/tracking、UPM 換算ポリシー、project-version metadata forwarding、グリフ名パース、reverse-cmap kana / 句読点分類、CJK 分類、GSUB/GPOS 走査、baseline palt 方針、x-scale、bbox 除去、default-ignorable zero-width glyph 追加、tracking、ss09/halt feature の retarget、final TTF integrity validation、final runtime feature scaling、InterVariable edge instance 互換性 |
 | `test_proportional.py` | 39 | palt/vpal 抽出、SinglePos lookup の加算読み取り、グリフ平行移動、vkrn を含む GPOS feature 削除、runtime-palt/vpal helper coverage + base/residual 分割 + optional squeeze helper、ss09 生成 + 縦方向 no-op を含む shaping |
 | `test_release.py` | 2 | GitHub アセット URL 契約、npm パッケージレイアウト (files glob、license、README、self-host/CDN CSS root 配置) |
 | `test_webfont_build.py` | 42 | 範囲マージ / 重複除去、5 桁 hex 含む unicode-range、JIS 区マッピング、サブセット計画の配置 / 非重複 / 完全カバレッジ、ストラテジーパーサーのエッジケース |

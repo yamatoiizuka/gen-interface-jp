@@ -40,6 +40,7 @@ from font.build import (
     _parallel_task_command,
     _parse_args,
     _project_version,
+    _refresh_ss09_feature_after_merge,
     _reverse_cmap,
     _retarget_feature_adjustments,
     _retarget_named_adjustments,
@@ -79,8 +80,10 @@ from font.build import (
     TRACKING_IGNORE_CODEPOINTS,
 )
 from font.proportional import (
+    _install_halt_feature,
     _install_ss09_punctuation_feature,
     _read_palt,
+    _read_single_pos_feature,
 )
 from merge_fonts import parse_codepoint_list
 
@@ -1069,6 +1072,64 @@ class TestPaltSymbolPolicy:
         after_gpos = _layout_feature_tags(font, "GPOS")
         assert inter_sets | {"ss09"} <= after_gsub
         assert "halt" not in after_gpos
+
+    def test_halt_install_reproduces_ss09_adjustments(self):
+        inter_path = _default_inter_static_path(FAMILIES["normal"], "Regular")
+        if not Path(inter_path).is_file():
+            pytest.skip(f"Inter font not found at {inter_path}")
+        font = TTFont(inter_path)
+        adjustments = {"A": (-12, -34), "B": (0, -56)}
+
+        _install_halt_feature(font, adjustments)
+
+        assert "halt" in _layout_feature_tags(font, "GPOS")
+        assert _read_single_pos_feature(
+            font,
+            "halt",
+            "XPlacement",
+            "XAdvance",
+        ) == adjustments
+        halt_record = next(
+            record
+            for record in font["GPOS"].table.FeatureList.FeatureRecord
+            if record.FeatureTag == "halt"
+        )
+        halt_lookups = [
+            font["GPOS"].table.LookupList.Lookup[index]
+            for index in halt_record.Feature.LookupListIndex
+        ]
+        assert halt_lookups
+        assert all(
+            subtable.ValueFormat == 0x0005
+            for lookup in halt_lookups
+            for subtable in lookup.SubTable
+        )
+
+    def test_refresh_ss09_also_installs_retargeted_halt(self, tmp_path):
+        inter_path = _default_inter_static_path(FAMILIES["normal"], "Regular")
+        if not Path(inter_path).is_file():
+            pytest.skip(f"Inter font not found at {inter_path}")
+        final_path = tmp_path / "merged.ttf"
+        font = TTFont(inter_path)
+        font.save(final_path)
+        adjustments = {0x41: (-12, -34)}
+
+        _refresh_ss09_feature_after_merge(
+            str(final_path),
+            adjustments,
+            {},
+            {},
+        )
+
+        refreshed = TTFont(final_path)
+        assert "ss09" in _layout_feature_tags(refreshed, "GSUB")
+        assert _read_single_pos_feature(
+            refreshed,
+            "halt",
+            "XPlacement",
+            "XAdvance",
+        ) == {"A": (-12, -34)}
+        assert "vhal" not in _layout_feature_tags(refreshed, "GPOS")
 
     def test_runtime_palt_keeps_reduced_base_metrics(self):
         assert RUNTIME_PALT_BASE_SCALE == 0.34

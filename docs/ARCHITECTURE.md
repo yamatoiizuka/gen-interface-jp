@@ -112,6 +112,9 @@ For each (family, weight) in FAMILIES × WEIGHTS:
   → install horizontal yakumono-only ss09 against the final cmap / glyph names
     so merge-time glyph renames keep optional horizontal yakumono behavior;
     vertical writing remains a basic full-width fallback
+  → re-synthesize GPOS halt from those same retargeted ss09 residuals so
+    Chromium CSS text-spacing-trim works; Blink requires halt, while vhal
+    and chws are intentionally absent
   → add post-merge default-ignorable zero-width glyphs for U+200C, U+200D,
     and U+FE00-U+FE0F to format 4 / format 12 cmap tables. These empty glyphs
     prevent literal composers from rendering tofu for emoji variation
@@ -199,8 +202,11 @@ Four sub-passes, all in-place on the inst:
    Runtime `vpal` is not reinstalled, vertical `vkrn` is stripped, and
    production builds do not create vertical `.ss09` alternates. Vertical
    writing is treated as a fallback path that should keep basic full-width
-   rhythm. Final fonts strip `palt`, `vpal`, `halt`, `vhal`, and `vkrn` so
-   optional yakumono spacing is exposed through horizontal `ss09` only. Glyphs without palt entries are not
+   rhythm. `make_proportional` strips `palt`, `vpal`, `halt`, `vhal`, and
+   `vkrn`; after the final merge, a fresh horizontal `halt` is synthesized
+   from the same retargeted residuals as `ss09` so Chromium can apply CSS
+   `text-spacing-trim` (Blink requires `halt`). `vhal` and `chws` remain
+   intentionally absent. Glyphs without palt entries are not
    automatically sidebearing-squeezed; they keep their original
    `hmtx` unless a later explicit spacing rule touches them.
    `U+30FB` (・) is split from Noto's shared `uni2027` glyph before palt
@@ -312,7 +318,10 @@ for shared Noto glyphs such as `U+FF40` (｀), which uses Noto's `uni2035`
 before merge but may be renamed to `uni2035.orig` when Inter also provides
 `U+2035`. Because this final install happens after the merge, the saved
 residual records are also scaled by `SCALE` so live `ss09` alternates match
-the optically scaled Noto base.
+the optically scaled Noto base. The same retargeted residuals are installed
+as a GPOS `halt` SinglePos feature so Chromium's CSS `text-spacing-trim`
+activates; Blink requires `halt`. No vertical `vhal` or contextual `chws`
+feature is created.
 
 ## Proportional Metrics (`font/proportional.py`)
 
@@ -435,6 +444,9 @@ along Unicode ranges and emits one `@font-face` rule per slice with a
 references. The plan is cmap/codepoint-driven because `unicode-range` is a
 user-facing character policy; `fontTools.subset` performs the layout closure
 needed to retain referenced alternates and positioning data inside each WOFF2.
+That layout closure preserves the final font's GSUB `ss09` and GPOS `halt`
+records in the relevant subsets, enabling Chromium `text-spacing-trim` in
+the shipped webfonts; `vhal` and `chws` remain absent.
 Subset WOFF2 generation honors `--jobs`; for `jobs > 1` it uses
 `ThreadPoolExecutor` rather than process workers because the macOS/pyenv
 spawn path deadlocked under the full webfont task fan-out (issue #33).
@@ -565,7 +577,7 @@ Tests live under `tests/`, split by surface:
 
 | File | Tests | Verifies |
 |---|---|---|
-| `test_font_build.py` | 120 | CLI build selection and parallel intermediate path separation, Japanese vertical body scaling/tracking, UPM scaling policy, project-version metadata forwarding, glyph-name parsing, reverse-cmap kana / punctuation classification, CJK classification, GSUB/GPOS walk, baseline palt policy, x-scale, bbox strip, default-ignorable zero-width glyph insertion, tracking, final TTF integrity validation, ss09 feature retargeting, final runtime feature scaling, InterVariable edge-instance compatibility |
+| `test_font_build.py` | 122 | CLI build selection and parallel intermediate path separation, Japanese vertical body scaling/tracking, UPM scaling policy, project-version metadata forwarding, glyph-name parsing, reverse-cmap kana / punctuation classification, CJK classification, GSUB/GPOS walk, baseline palt policy, x-scale, bbox strip, default-ignorable zero-width glyph insertion, tracking, final TTF integrity validation, ss09/halt feature retargeting, final runtime feature scaling, InterVariable edge-instance compatibility |
 | `test_proportional.py` | 39 | palt/vpal extraction, cumulative SinglePos lookup reading, glyph translation, GPOS feature removal including vkrn, runtime-palt/vpal helper coverage + base/residual split + optional squeeze helper, ss09 construction + shaping including vertical no-op coverage |
 | `test_release.py` | 2 | GitHub asset URL contract, npm package layout (files glob, license, README, self-host/CDN CSS entrypoints at root) |
 | `test_webfont_build.py` | 42 | Range merge / dedup, unicode-range formatting incl. 5-digit, JIS row mapping, subset plan placement / non-overlap / coverage, strategy parser edge cases |
