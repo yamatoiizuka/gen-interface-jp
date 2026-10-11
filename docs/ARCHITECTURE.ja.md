@@ -525,6 +525,10 @@ version record を刻印するため、フォント本体とリリース成果�
 GitHub Pages のデプロイは `.github/workflows/pages.yml`
 で実行。
 
+`site/index.html` には `https://gen.typesetting.jp/` の Google Search Console
+所有権確認用メタタグを含む。URL 検査と再インデックス申請を引き続き利用できる
+よう、確認後も公開 HTML に残す。
+
 ## テスト
 
 ```bash

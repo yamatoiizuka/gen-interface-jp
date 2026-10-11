@@ -539,6 +539,10 @@ It uses the `cdn/*.css` entrypoints because the site links directly to
 jsDelivr.
 GitHub Pages deploys the build via `.github/workflows/pages.yml`.
 
+`site/index.html` includes the Google Search Console ownership verification
+meta tag for `https://gen.typesetting.jp/`. Keep it in the deployed HTML
+after verification so URL inspection and reindexing requests remain available.
+
 ## Tests
 
 ```bash
