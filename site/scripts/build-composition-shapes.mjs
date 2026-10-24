@@ -1,8 +1,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import createHb from "harfbuzzjs/hb.js";
-import hbjs from "harfbuzzjs/hbjs.js";
+import * as hb from "harfbuzzjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SITE_ROOT = path.resolve(__dirname, "..");
@@ -11,12 +10,6 @@ const OUT_FILE = path.join(
   "src",
   "generated",
   "compositionShapes.ts",
-);
-const WASM_FILE = path.join(
-  SITE_ROOT,
-  "node_modules",
-  "harfbuzzjs",
-  "hb.wasm",
 );
 
 const JOBS = [
@@ -57,59 +50,42 @@ const JOBS = [
 const round = (value) => Math.round(value * 1000) / 1000;
 
 function createShapeForText(hb, fontData, { text, script, language }, weight) {
-  const blob = hb.createBlob(new Uint8Array(fontData));
-  const face = hb.createFace(blob, 0);
-  const font = hb.createFont(face);
+  const blob = new hb.Blob(new Uint8Array(fontData));
+  const face = new hb.Face(blob, 0);
+  const font = new hb.Font(face);
+  font.setVariations([new hb.Variation("wght", weight)]);
 
-  try {
-    font.setVariations({ wght: weight });
+  const shapeWith = (features) => {
+    const buffer = new hb.Buffer();
+    buffer.addText(text);
+    buffer.setDirection(hb.Direction.LTR);
+    buffer.setScript(script);
+    buffer.setLanguage(language);
+    hb.shape(font, buffer, features);
+    return buffer.getGlyphInfosAndPositions();
+  };
 
-    const shapeWith = (features) => {
-      const buffer = hb.createBuffer();
-      try {
-        buffer.addText(text);
-        buffer.setDirection("ltr");
-        buffer.setScript(script);
-        buffer.setLanguage(language);
-        hb.shape(font, buffer, features);
-        return buffer.json();
-      } finally {
-        buffer.destroy();
-      }
-    };
+  const noPaltRaw = shapeWith([]);
+  const withPaltRaw = shapeWith([new hb.Feature("palt")]);
+  const position = (glyph) => ({
+    ax: round(glyph.xAdvance),
+    ay: round(glyph.yAdvance),
+    dx: round(glyph.xOffset),
+    dy: round(glyph.yOffset),
+  });
 
-    const noPaltRaw = shapeWith("");
-    const withPaltRaw = shapeWith("palt");
-
-    return {
-      glyphs: noPaltRaw.map((glyph, index) => ({
-        g: glyph.g,
-        cl: glyph.cl,
-        path: font.glyphToPath(glyph.g),
-        noPalt: {
-          ax: round(glyph.ax),
-          ay: round(glyph.ay),
-          dx: round(glyph.dx),
-          dy: round(glyph.dy),
-        },
-        withPalt: {
-          ax: round(withPaltRaw[index].ax),
-          ay: round(withPaltRaw[index].ay),
-          dx: round(withPaltRaw[index].dx),
-          dy: round(withPaltRaw[index].dy),
-        },
-      })),
-    };
-  } finally {
-    font.destroy();
-    face.destroy();
-    blob.destroy();
-  }
+  return {
+    glyphs: noPaltRaw.map((glyph, index) => ({
+      g: glyph.codepoint,
+      cl: glyph.cluster,
+      path: font.glyphToPath(glyph.codepoint),
+      noPalt: position(glyph),
+      withPalt: position(withPaltRaw[index]),
+    })),
+  };
 }
 
 async function main() {
-  const wasmBinary = await readFile(WASM_FILE);
-  const hb = hbjs(await createHb({ wasmBinary }));
   const fontCache = new Map();
   const data = {};
 

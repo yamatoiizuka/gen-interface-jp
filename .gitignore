@@ -21,3 +21,6 @@ site/dist/
 # OS
 .DS_Store
 .claude/
+
+# Project-local Node runtime
+.venv-node/

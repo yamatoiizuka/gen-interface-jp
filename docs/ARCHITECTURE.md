@@ -622,7 +622,7 @@ flow.
 
 ### Python
 
-- `ofl-font-baker` (>= 0.4.7) — Composite font merge engine. Inherits
+- `ofl-font-baker` (>= 0.4.8) — Composite font merge engine. Inherits
   base/sub identity records via `metadataMode`. Drives Stage 1 (bake)
   and Stage 3 (merge) of the build pipeline. 0.4.0 added
   `subFont.excludeCodepoints` and glyph-name collision rename, used by
@@ -637,17 +637,65 @@ flow.
   stays on the active build grid. 0.4.7 omits empty optional name records,
   avoiding macOS Font Book warnings for blank designer / designer URL
   metadata.
-- `fonttools` (>= 4.47.0) — Font parsing, instancer, subsetter, GPOS / GSUB
+- `fonttools` (>= 4.67.0) — Font parsing, instancer, subsetter, GPOS / GSUB
   table editing.
 - `freetype-py` — Used by tooling around metrics inspection.
-- `brotli` — WOFF2 compression (transitive via fontTools).
-- `pytest` — Test runner.
+- `brotli` (>= 1.2.1) — Explicit WOFF2 compression dependency.
+- `pytest` (>= 9.1.1) — Test runner.
+- `uharfbuzz` (>= 0.57.0) — Development dependency so shaping tests run rather than skip.
 
 ### Node.js (site only)
 
 - `vite` — Build tool / dev server.
 - The site has no dependency on the webfont source — it loads the
   published npm package via jsDelivr.
+
+### Reproducible development environment
+
+Python 3.15.1 (`.python-version`) and Node.js 24.22.1 LTS
+(`.node-version`) are the development and CI runtimes. Python requires
+3.11 or newer. Use uv 0.13.5 and `uv sync --frozen --extra dev`; `uv.lock`
+locks the build and test dependencies. `make` prefers `.venv/bin/python`
+when available. Activate that environment for direct Python commands.
+An optional local Node runtime under `.venv-node/bin` is also preferred by
+`make`; the user shell and system Node installation are unchanged.
+Install site dependencies with `npm ci` under `site/` using the pinned Node
+runtime. TypeScript remains on 6.0.3 because typescript-eslint 8.72.0
+requires TypeScript <6.1. HarfBuzz.js 1.6.4 uses the public ESM API;
+its generated composition shape data remains unchanged from 0.10.3.
+CI uses the same runtime files and frozen Python/npm dependency sets.
+
+For dependency upgrades, build both environments from the same source and
+compare the complete TTF and WOFF2 trees with
+`python scripts/compare_fonts.py BEFORE AFTER --output report.json`.
+The comparison checks every decompressed SFNT table and ignores only
+`head.created`, `head.modified`, and `head.checkSumAdjustment`.
+It reports raw byte equality separately. For differing tables it compares
+TTX data, unwrapping equivalent GSUB/GPOS Extension lookups; physical
+offset/layout differences are recorded as `encoding_only`. It fails on
+missing/added fonts or any remaining semantic difference. A difference requires investigation; it
+is not automatically treated as a visual regression.
+
+### October 2026 dependency verification
+
+The reference is the published GitHub Release **v0.8.0** asset
+`GenInterfaceJP-0.8.0.zip` (SHA-256
+`7619cbc173941d0620d9f8c851c268c20f49237f3411369945e0aec50f222eb2`).
+All 16 rebuilt TTFs match its outlines, metrics, cmap, name and layout
+rules. Apart from timestamps/checksum adjustment, only `BASE` differs.
+fontTools 4.64.0 added BASE instancing (#4137): variable BASE coordinates
+are now resolved at the selected Noto weight and the variation store is
+removed. For Regular, horizontal `icfb` changes from -137 to -166 and
+`icft` from 1694 to 1722 (UPM 2048); `ideo` and `romn` stay unchanged.
+This is a real metadata change, not a byte-identical rebuild. Applications
+that use BASE alignment may behave differently. HarfBuzz shaping matches
+in all 512 tested cases across 16 fonts, including the complete cmap,
+Japanese/Latin samples, horizontal/vertical directions and ss09/halt/vhal.
+The existing edge-instance verifier has stale legacy-name expectations:
+it expects IDs 1/2 to contain the typographic family/weight, while both
+the published and rebuilt fonts use style-linked legacy names (e.g.
+`Gen Interface JP Thin` / `Regular`); IDs 16/17 carry the family/weight.
+Its eight name failures predate this environment update.
 
 ## Maintaining This Document
 

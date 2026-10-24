@@ -1,7 +1,11 @@
 SHELL := /bin/bash
 
-PYTHON ?= python3
+PYTHON ?= $(if $(wildcard .venv/bin/python),.venv/bin/python,python3)
 NODE ?= node
+# Prefer the optional project-local Node runtime without changing the user shell.
+ifneq ($(wildcard .venv-node/bin/node),)
+export PATH := $(CURDIR)/.venv-node/bin:$(PATH)
+endif
 PYTHONPATH := src
 PY := PYTHONPATH=$(PYTHONPATH) $(PYTHON)
 

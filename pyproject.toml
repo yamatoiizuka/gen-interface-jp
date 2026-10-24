@@ -4,15 +4,18 @@ version = "0.8.0"
 description = "Typeface harmonizing Latin and Japanese for digital interfaces."
 license = "MIT"
 license-files = ["LICENSE"]
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 dependencies = [
     "ofl-font-baker>=0.4.8",
-    "freetype-py>=2.4.0",
+    "fonttools>=4.67.0",
+    "brotli>=1.2.1",
+    "freetype-py>=2.5.1",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest",
+    "pytest>=9.1.1",
+    "uharfbuzz>=0.57.0",
 ]
 
 [tool.pytest.ini_options]

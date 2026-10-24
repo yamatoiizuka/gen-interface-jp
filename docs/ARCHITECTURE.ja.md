@@ -607,7 +607,7 @@ GitHub Pages にデプロイ。リリースパッケージングはローカル�
 
 ### Python
 
-- `ofl-font-baker` (>= 0.4.7) — コンポジットフォントマージエンジン。
+- `ofl-font-baker` (>= 0.4.8) — コンポジットフォントマージエンジン。
   `metadataMode` で base / sub の identity を継承する。Stage 1 (bake) と
   Stage 3 (merge) を駆動。0.4.0 で `subFont.excludeCodepoints` と
   glyph-name collision rename が追加され、merge 段で日本語慣習記号を
@@ -620,17 +620,62 @@ GitHub Pages にデプロイ。リリースパッケージングはローカル�
   読むプロポーショナル / 縦書き位置データも active build grid 上に揃う。
   0.4.7 で空の optional name record を出力しないようになり、空の designer /
   designer URL metadata による macOS Font Book の警告を避けられる。
-- `fonttools` (>= 4.47.0) — フォントパース、instancer、subsetter、
+- `fonttools` (>= 4.67.0) — フォントパース、instancer、subsetter、
   GPOS / GSUB の編集。
 - `freetype-py` — メトリクス検証ツーリングで使用。
-- `brotli` — WOFF2 圧縮 (fonttools 経由の transitive)。
-- `pytest` — テストランナー。
+- `brotli` (>= 1.2.1) — WOFF2 圧縮の明示的な依存。
+- `pytest` (>= 9.1.1) — テストランナー。
+- `uharfbuzz` (>= 0.57.0) — shaping テストを skip せず実行するための開発依存。
 
 ### Node.js (サイトのみ)
 
 - `vite` — ビルドツール / 開発サーバー。
 - サイトは webfont のソースには依存しない — jsDelivr 経由で公開済み npm
   パッケージを読み込む。
+
+### 再現可能な開発環境
+
+開発・CI のランタイムは Python 3.15.1 (`.python-version`) と
+Node.js 24.22.1 LTS (`.node-version`)。Python の最低要件は 3.11。
+uv 0.13.5 で `uv sync --frozen --extra dev` を実行し、`uv.lock` に固定した
+ビルド・テスト依存をインストールする。`make` は `.venv/bin/python` があれば
+優先する。Python コマンドを直接実行する場合はこの環境を activate する。
+`.venv-node/bin` にプロジェクト用 Node があれば `make` でも優先する。
+ユーザーのシェルやシステムの Node は変更しない。
+サイトは指定 Node バージョンで `site/` 内から `npm ci` を実行する。
+typescript-eslint 8.72.0 が TypeScript <6.1 を要求するため、TypeScript は
+6.0.3 を使用する。HarfBuzz.js 1.6.4 は公開 ESM API を利用し、生成する
+composition shape データは 0.10.3 と同一。CI も同じバージョンファイルと
+Python/npm の固定依存を使う。
+
+依存更新時は同じソースを新旧環境でビルドし、TTF / WOFF2 の全ツリーを
+`python scripts/compare_fonts.py BEFORE AFTER --output report.json` で比較する。
+展開後の全 SFNT テーブルを検査し、除外するのは `head.created`、
+`head.modified`、`head.checkSumAdjustment` のみ。ファイル全体のバイト一致は
+別に記録する。テーブルに差があれば TTX データを比較し、GSUB/GPOS の
+同等な Extension lookup を展開する。物理的な配置やオフセットだけの差は
+`encoding_only` に記録する。フォントの追加・欠落や意味的な差があれば失敗とし、
+内容を調査する。差分だけで見た目の退行とは判断しない。
+
+### 2026年10月の依存更新検証
+
+比較基準は GitHub Releases の公開済み **v0.8.0** アセット
+`GenInterfaceJP-0.8.0.zip` (SHA-256:
+`7619cbc173941d0620d9f8c851c268c20f49237f3411369945e0aec50f222eb2`)。
+再生成した全16 TTF の輪郭、メトリクス、cmap、name、組版ルールは一致した。
+生成日時・checksum adjustment を除く差は `BASE` のみ。
+fontTools 4.64.0 の BASE インスタンス化対応 (#4137) により、Noto の選択
+ウェイトで BASE 座標が確定し、variation store が除去される。
+Regular の横書き `icfb` は -137→-166、`icft` は1694→1722 (UPM 2048)。
+`ideo` と `romn` は変わらない。バイト同一ではなくメタデータに実際の差があり、
+BASE による文字揃えを使うアプリでは挙動が変わる可能性がある。
+HarfBuzz の全16フォント・512条件 (全 cmap、和欧文サンプル、横/縦方向、
+ss09/halt/vhal) の shaping 結果は一致した。
+既存の edge-instance 検証には legacy name の古い期待値がある。
+ID 1/2 に typographic family/weight を期待しているが、公開版・再生成版とも
+style-linking 用の名称 (例: `Gen Interface JP Thin` / `Regular`) を持ち、
+family/weight は ID 16/17 に入る。この8件の name 検証失敗は環境更新前から
+存在し、今回の退行ではない。
 
 ## このドキュメントの保守
 
