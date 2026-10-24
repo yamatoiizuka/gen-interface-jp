@@ -607,7 +607,7 @@ GitHub Pages にデプロイ。リリースパッケージングはローカル�
 
 ### Python
 
-- `ofl-font-baker` (>= 0.4.8) — コンポジットフォントマージエンジン。
+- `ofl-font-baker` (>= 0.4.9) — コンポジットフォントマージエンジン。
   `metadataMode` で base / sub の identity を継承する。Stage 1 (bake) と
   Stage 3 (merge) を駆動。0.4.0 で `subFont.excludeCodepoints` と
   glyph-name collision rename が追加され、merge 段で日本語慣習記号を
@@ -626,6 +626,8 @@ GitHub Pages にデプロイ。リリースパッケージングはローカル�
 - `brotli` (>= 1.2.1) — WOFF2 圧縮の明示的な依存。
 - `pytest` (>= 9.1.1) — テストランナー。
 - `uharfbuzz` (>= 0.57.0) — shaping テストを skip せず実行するための開発依存。
+
+0.4.9 ではパッケージ出力先の安全性検査と、一時ディレクトリで生成後に置き換え・失敗時に復元する処理が追加され、既存の出力を保護する。
 
 ### Node.js (サイトのみ)
 

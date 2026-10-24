@@ -195,7 +195,7 @@ requires-dist = [
     { name = "brotli", specifier = ">=1.2.1" },
     { name = "fonttools", specifier = ">=4.67.0" },
     { name = "freetype-py", specifier = ">=2.5.1" },
-    { name = "ofl-font-baker", specifier = ">=0.4.8" },
+    { name = "ofl-font-baker", specifier = ">=0.4.9" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.1.1" },
     { name = "uharfbuzz", marker = "extra == 'dev'", specifier = ">=0.57.0" },
 ]
@@ -212,15 +212,15 @@ wheels = [
 
 [[package]]
 name = "ofl-font-baker"
-version = "0.4.8"
+version = "0.4.9"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "brotli" },
     { name = "fonttools" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/53/6b/a9916eb8216210c1d9ba8e2eacaec99e7c889f07fed39d0851b11606af11/ofl_font_baker-0.4.8.tar.gz", hash = "sha256:fd882d961eeb855d6c0024e866845665f50ff1e0d5dab3335cb4cd29ae08d253", size = 66294, upload-time = "2026-07-04T07:46:42.354Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/9b/24/84aecaa81f476acbbacb177dc1bfcd4cef14d5f0317a9ca6eadd9258fbce/ofl_font_baker-0.4.9.tar.gz", hash = "sha256:720cbe506cf4cda7d2a67f0ea7189063630afb1fbb090d291d9a2c62fcc5433d", size = 67438, upload-time = "2026-10-24T09:27:47.063Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/df/03/0002aa800adec04db8e6c78d78ef5ee1aa03de88a3f7176a40edfb025beb/ofl_font_baker-0.4.8-py3-none-any.whl", hash = "sha256:73f2d6432fa720a16e1e35e0815064946e867f47f555bff24e3549693c033a12", size = 71818, upload-time = "2026-07-04T07:46:41.114Z" },
+    { url = "https://files.pythonhosted.org/packages/ce/86/4501762a1280288f81491fcc266e9c63c582c97153514086fa270e2ddea0/ofl_font_baker-0.4.9-py3-none-any.whl", hash = "sha256:b94af174f053d131896c56ed83a0e1f7504430946d00f2938679aa1265323fda", size = 72937, upload-time = "2026-10-24T09:27:45.828Z" },
 ]
 
 [[package]]

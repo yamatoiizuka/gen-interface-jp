@@ -622,7 +622,7 @@ flow.
 
 ### Python
 
-- `ofl-font-baker` (>= 0.4.8) — Composite font merge engine. Inherits
+- `ofl-font-baker` (>= 0.4.9) — Composite font merge engine. Inherits
   base/sub identity records via `metadataMode`. Drives Stage 1 (bake)
   and Stage 3 (merge) of the build pipeline. 0.4.0 added
   `subFont.excludeCodepoints` and glyph-name collision rename, used by
@@ -643,6 +643,8 @@ flow.
 - `brotli` (>= 1.2.1) — Explicit WOFF2 compression dependency.
 - `pytest` (>= 9.1.1) — Test runner.
 - `uharfbuzz` (>= 0.57.0) — Development dependency so shaping tests run rather than skip.
+
+Version 0.4.9 adds guarded package export destinations and staged replacement with rollback to preserve existing exports on failure.
 
 ### Node.js (site only)
 
