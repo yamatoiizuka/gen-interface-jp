@@ -20,21 +20,27 @@ jobs:
     env:
       PYTHONPATH: src
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7.1.0
         with:
-          python-version: '3.12'
+          python-version-file: '.python-version'
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7.1.0
         with:
-          node-version: '20'
+          node-version-file: '.node-version'
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+
+      - uses: astral-sh/setup-uv@v10.3.2
+        with:
+          version: "0.13.5"
 
       - name: Install Python dependencies
-        run: pip install ofl-font-baker freetype-py pytest
+        run: uv sync --frozen --extra dev
 
       - name: Run Python tests
-        run: python3 -m pytest
+        run: uv run --frozen --extra dev pytest
 
       - name: Install site dependencies
         working-directory: site
@@ -43,7 +49,7 @@ jobs:
       - name: Build Pages artifact
         run: make site
 
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5.0.0
         with:
           path: site/dist
 
@@ -55,4 +61,4 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5.0.1
