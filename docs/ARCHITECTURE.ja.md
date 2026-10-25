@@ -140,7 +140,10 @@ matrix をウェイトごとに 1 worker で並列ビルドする。job は
 (spawn 経路が macOS/pyenv でハングしたため、issue #33)。runner の実行中は
 SIGINT / SIGTERM を遅延させる (`deferred_signals`): 受けたシグナルは記録して
 安全な位置で確認し、起動済みの子を全て terminate・回収してから再送出する
-(10 秒で終わらなければ kill)。子の失敗時も同様。`webfont.build` は一時タスク
+(10 秒で終わらなければ kill)。記録したシグナルは子の失敗より優先し、失敗は
+`__cause__` として残す。ハンドラの切り替えは両シグナルを保留した状態
+(`pthread_sigmask`) で行い、半端に復元されたハンドラにシグナルが届かない
+ようにする。子の失敗時も同じ後始末を行う。`webfont.build` は一時タスク
 ディレクトリの存続期間全体でこの遅延を保持する。共有 Noto bake は
 weight ごと、proportional intermediate は family と weight ごとに分ける。
 
@@ -590,7 +593,7 @@ PYTHONPATH=src python3 -m pytest        # 全テスト (~10 秒)
 |---|---|---|
 | `test_font_build.py` | 113 | CLI build selection / 共有 bake と family 別 intermediate path、和文 vertical body scaling/tracking、UPM 換算ポリシー、project-version metadata forwarding、グリフ名パース、reverse-cmap kana / 句読点分類、CJK 分類、GSUB/GPOS 走査、baseline palt/vhal 方針、bbox 除去、default-ignorable zero-width glyph 追加、tracking、ss09/halt/vhal feature の retarget、final TTF integrity validation、final runtime feature scaling、InterVariable edge instance 互換性 |
 | `test_proportional.py` | 30 | palt 抽出、SinglePos lookup の加算読み取り、グリフ平行移動、vkrn を含む GPOS feature 削除、reduced palt の base 焼き込み、ss09 生成 + 縦方向 no-op を含む shaping |
-| `test_parallel.py` | 6 | 子インタプリタ runner: 親への SIGTERM、子の起動中・後始末中のシグナルでも全ての子 (SIGTERM を無視する子を含む) を停止・回収、子の失敗時は例外を送出し残りの子を停止、遅延した SIGINT/SIGTERM がブロック終了時に再送出されハンドラが復元されること |
+| `test_parallel.py` | 10 | 子インタプリタ runner: 親への SIGTERM、子の起動中・後始末中のシグナルでも全ての子 (SIGTERM を無視する子を含む) を停止・回収、子の失敗時は例外を送出し残りの子を停止、遅延した SIGINT/SIGTERM がブロック終了時に再送出される (ブロック内の例外より優先) こと、復元中にシグナルが届いてもハンドラが復元されること、他スレッドと状態を共有しないこと |
 | `test_release.py` | 2 | GitHub アセット URL 契約、npm パッケージレイアウト (files glob、license、README、self-host/CDN CSS root 配置) |
 | `test_webfont_build.py` | 42 | 範囲マージ / 重複除去、5 桁 hex 含む unicode-range、JIS 区マッピング、サブセット計画の配置 / 非重複 / 完全カバレッジ、ストラテジーパーサーのエッジケース |
 

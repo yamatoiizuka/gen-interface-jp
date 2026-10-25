@@ -36,6 +36,36 @@ def child_env() -> dict[str, str]:
 
 
 @contextmanager
+def _signals_blocked():
+    """Hold SIGINT / SIGTERM pending while handlers are swapped (POSIX).
+
+    A blocked signal is delivered when the mask is restored, so it reaches
+    either the old or the new handler set — never a half-swapped one.
+    """
+    if not hasattr(signal, "pthread_sigmask"):
+        yield
+        return
+    previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, CANCEL_SIGNALS)
+    try:
+        yield
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+
+
+def _restore_handlers(previous: dict[int, object]) -> None:
+    for signum, handler in previous.items():
+        signal.signal(signum, handler)
+
+
+def _cancellation(signum: int | None) -> BaseException | None:
+    if signum == signal.SIGINT:
+        return KeyboardInterrupt()
+    if signum is not None:
+        return SystemExit(128 + signum)
+    return None
+
+
+@contextmanager
 def deferred_signals():
     """Record SIGINT / SIGTERM inside the block and re-raise them on exit.
 
@@ -44,15 +74,17 @@ def deferred_signals():
     child and tracking it. Deferring both lets callers notice cancellation at
     safe points (``state["signum"]``), finish cleanup, and only then exit:
     ``KeyboardInterrupt`` for SIGINT, ``SystemExit(128 + signum)`` otherwise.
-    Nested blocks share the outermost block's state. Off the main thread,
-    signals cannot be handled and are left alone.
+    A recorded signal wins over an exception from the block, which is kept
+    as its ``__cause__``. Nested blocks on the main thread share the
+    outermost block's state. Off the main thread, signals cannot be handled
+    and each block gets its own inert state.
     """
     global _deferred
-    if _deferred is not None:
-        yield _deferred
-        return
     if threading.current_thread() is not threading.main_thread():
         yield {"signum": None}
+        return
+    if _deferred is not None:
+        yield _deferred
         return
 
     state: dict[str, int | None] = {"signum": None}
@@ -61,19 +93,31 @@ def deferred_signals():
         if state["signum"] is None:
             state["signum"] = signum
 
-    previous = {signum: signal.signal(signum, record) for signum in CANCEL_SIGNALS}
-    _deferred = state
+    previous: dict[int, object] = {}
+    with _signals_blocked():
+        try:
+            for signum in CANCEL_SIGNALS:
+                previous[signum] = signal.signal(signum, record)
+        except BaseException:
+            _restore_handlers(previous)
+            raise
+        _deferred = state
+
+    error: BaseException | None = None
     try:
         yield state
+    except BaseException as exc:
+        error = exc
     finally:
-        _deferred = None
-        for signum, handler in previous.items():
-            signal.signal(signum, handler)
+        with _signals_blocked():
+            _deferred = None
+            _restore_handlers(previous)
 
-    if state["signum"] == signal.SIGINT:
-        raise KeyboardInterrupt
-    if state["signum"] is not None:
-        raise SystemExit(128 + state["signum"])
+    cancellation = _cancellation(state["signum"])
+    if cancellation is not None:
+        raise cancellation from error
+    if error is not None:
+        raise error
 
 
 def _stop(processes: list[subprocess.Popen]) -> None:

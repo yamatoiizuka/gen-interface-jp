@@ -141,8 +141,10 @@ interpreters (`src/parallel.py`) rather than `ProcessPoolExecutor`, whose
 spawn path has hung on macOS/pyenv (issue #33). SIGINT / SIGTERM are
 deferred while the runner is active (`deferred_signals`): they are recorded,
 checked at safe points, and re-raised only after every started child has been
-terminated and reaped (kill fallback after 10 s). The same applies on a child
-failure. `webfont.build` holds the deferral across its whole temp task
+terminated and reaped (kill fallback after 10 s). A recorded signal wins
+over a child failure, which is kept as its `__cause__`. Handler swaps run with
+both signals blocked (`pthread_sigmask`), so a signal never lands on a
+half-restored handler set. The same cleanup applies on a child failure. `webfont.build` holds the deferral across its whole temp task
 directory lifetime. The shared Noto bake is
 scoped by weight; proportional intermediates are scoped by family and weight.
 
@@ -607,7 +609,7 @@ Tests live under `tests/`, split by surface:
 |---|---|---|
 | `test_font_build.py` | 113 | CLI build selection, shared-bake / family-scoped intermediate paths, Japanese vertical body scaling/tracking, UPM scaling policy, project-version metadata forwarding, glyph-name parsing, reverse-cmap kana / punctuation classification, CJK classification, GSUB/GPOS walk, baseline palt/vhal policy, bbox strip, default-ignorable zero-width glyph insertion, tracking, final TTF integrity validation, ss09/halt/vhal feature retargeting, final runtime feature scaling, InterVariable edge-instance compatibility |
 | `test_proportional.py` | 30 | palt extraction, cumulative SinglePos lookup reading, glyph translation, GPOS feature removal including vkrn, reduced-palt base fraction, ss09 construction + shaping including vertical no-op coverage |
-| `test_parallel.py` | 6 | Child-interpreter runner: SIGTERM to the parent, a signal mid-spawn, or a signal mid-cleanup still stops and reaps every child (incl. a SIGTERM-ignoring one); a failing child raises and stops its siblings; deferred SIGINT/SIGTERM re-raise on exit and restore handlers |
+| `test_parallel.py` | 10 | Child-interpreter runner: SIGTERM to the parent, a signal mid-spawn, or a signal mid-cleanup still stops and reaps every child (incl. a SIGTERM-ignoring one); a failing child raises and stops its siblings; deferred SIGINT/SIGTERM re-raise on exit (winning over a block exception), restore handlers even when a signal lands mid-restore, and are not shared with other threads |
 | `test_release.py` | 2 | GitHub asset URL contract, npm package layout (files glob, license, README, self-host/CDN CSS entrypoints at root) |
 | `test_webfont_build.py` | 42 | Range merge / dedup, unicode-range formatting incl. 5-digit, JIS row mapping, subset plan placement / non-overlap / coverage, strategy parser edge cases |
 
