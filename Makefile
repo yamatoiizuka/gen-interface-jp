@@ -9,8 +9,9 @@ endif
 PYTHONPATH := src
 PY := PYTHONPATH=$(PYTHONPATH) $(PYTHON)
 
-WEBFONT_JOBS ?= 8
-FONT_JOBS ?= 16
+# One font job per weight (each bakes Noto once for both families).
+FONT_JOBS ?= 8
+WEBFONT_JOBS ?= $(shell getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
 NPM_PACKAGE_DIR := dist/release/npm
 NPM_PUBLISH_FLAGS ?= --access public
 NPM_CACHE ?= $(CURDIR)/.npm-cache
