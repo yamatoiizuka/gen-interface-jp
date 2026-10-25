@@ -7,6 +7,8 @@ src/
   font/       # core font baking: Inter + Noto Sans JP, spacing, TTF output
   webfont/    # derived web font delivery: CSS + unicode-range subset WOFF2
   release/    # release packaging: GitHub Release zips + npm webfont layout
+  parallel.py          # shared child-interpreter job runner (font / webfont)
+  project_metadata.py  # reads the canonical version from pyproject.toml
 ```
 
 The main product of this repository is the baked font family. Web font delivery
