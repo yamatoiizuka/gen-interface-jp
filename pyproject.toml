@@ -9,7 +9,6 @@ dependencies = [
     "ofl-font-baker>=0.4.10",
     "fonttools>=4.67.0",
     "brotli>=1.2.1",
-    "freetype-py>=2.5.1",
 ]
 
 [project.optional-dependencies]

@@ -9,7 +9,7 @@ Two test fonts back the suite:
   GSUB / GPOS data.
 
 * **synthetic_ttf** — a hand-built minimal TrueType font used for tests
-  that mutate every glyph (e.g. ``_apply_x_scale``, ``_apply_tracking``,
+  that mutate every glyph (e.g. ``_apply_tracking``,
   ``_strip_extreme_glyphs``). A handful of glyphs is enough to verify
   the per-glyph logic without paying the cost of walking 17 000 Noto
   glyphs per assertion.
@@ -18,7 +18,6 @@ Both fixtures hand back fresh TTFont copies on demand so tests can
 mutate without poisoning the shared state.
 """
 
-import copy
 import io
 from pathlib import Path
 
@@ -150,7 +149,7 @@ def _build_synthetic_ttf() -> TTFont:
         0x30FB: "uni30FB",
     })
 
-    def _square(x_min: int, y_min: int, x_max: int, y_max: int) -> "Glyph":
+    def _square(x_min: int, y_min: int, x_max: int, y_max: int):
         pen = TTGlyphPen(None)
         pen.moveTo((x_min, y_min))
         pen.lineTo((x_max, y_min))

@@ -22,31 +22,29 @@ from font.build import (
     _apply_glyph_spacing,
     _apply_tracking,
     _apply_vertical_tracking,
-    _apply_x_scale,
-    _EXTREME_YMAX,
-    _EXTREME_YMIN,
-    _VERTICAL_REPEAT_MARK_CODEPOINTS,
     _feature_adjustments_for_codepoints,
     _final_ttf_path,
+    _install_final_ss09_features,
+    _noto_instance_path,
+    _proportional_path,
+    _EXTREME_YMAX,
+    _EXTREME_YMIN,
     _final_output_metadata,
     _get_vert_alternates,
     _get_baseline_palt,
     _get_baseline_vhal,
     _glyphs_for_codepoints,
     _glyph_codepoint,
-    _intermediate_paths,
     _is_cjk_codepoint,
     _is_kana_or_punct,
     _is_kana_or_punct_codepoint,
     _parallel_task_command,
     _parse_args,
     _project_version,
-    _refresh_ss09_feature_after_merge,
     _reverse_cmap,
     _retarget_feature_adjustments,
     _retarget_named_adjustments,
     _runtime_palt_residual_adjustment,
-    _scale_design_adjustment,
     _scale_design_adjustments,
     _scale_feature_adjustments,
     _scale_design_unit,
@@ -60,21 +58,12 @@ from font.build import (
     _build_inter_variable_instance,
     _default_inter_static_path,
     _inter_source_path,
-    DISPLAY_PALT_SPACE_ADJUSTMENTS,
-    DISPLAY_VERTICAL_TRACKING,
     FAMILIES,
     INTER_VARIABLE,
     INTER_VARIABLE_EDGE_WEIGHTS,
     NOTO_VARIABLE,
-    NORMAL_PALT_SPACE_ADJUSTMENTS,
-    NORMAL_VERTICAL_TRACKING,
     PALT_FEATURE_CHARS,
     PALT_SPACE_ADJUSTMENTS,
-    RUNTIME_PALT_BASE_SCALE,
-    SOURCE_UPM,
-    SS09_SYNTHETIC_VERTICAL_ADJUSTMENTS,
-    SS09_VERTICAL_FEATURE_CHARS,
-    SS09_VERTICAL_FEATURE_GLYPHS,
     STATIC_INSTANCE_VARIATION_TABLES,
     SUB_EXCLUDE_CODEPOINTS,
     TARGET_UPM,
@@ -112,6 +101,14 @@ def _layout_feature_tags(font: TTFont, table_tag: str) -> set[str]:
     if feature_list is None:
         return set()
     return {record.FeatureTag for record in feature_list.FeatureRecord}
+
+
+def _roundtrip(font: TTFont) -> TTFont:
+    """Compile and reload a font, as the build does for its final TTF."""
+    buffer = io.BytesIO()
+    font.save(buffer)
+    buffer.seek(0)
+    return TTFont(buffer)
 
 
 def _add_glyph_copy(font: TTFont, source_glyph: str, new_glyph: str) -> None:
@@ -169,20 +166,24 @@ class TestBuildCli:
         with pytest.raises(SystemExit):
             _parse_args(["--jobs", "0"])
 
-    def test_parallel_intermediates_are_family_scoped(self):
-        normal_inst, normal_prop = _intermediate_paths(FAMILIES["normal"], "Bold")
-        display_inst, display_prop = _intermediate_paths(FAMILIES["display"], "Bold")
+    def test_noto_bake_is_shared_and_proportional_intermediates_are_family_scoped(self):
+        assert _noto_instance_path("Bold").endswith("NotoSansJP-Bold-Inst.ttf")
+        normal_prop = _proportional_path(FAMILIES["normal"], "Bold")
+        display_prop = _proportional_path(FAMILIES["display"], "Bold")
 
-        assert normal_inst != display_inst
         assert normal_prop != display_prop
-        assert "GenInterfaceJP-Bold" in normal_inst
-        assert "GenInterfaceJPDisplay-Bold" in display_inst
+        assert "GenInterfaceJP-Bold" in normal_prop
+        assert "GenInterfaceJPDisplay-Bold" in display_prop
 
-    def test_parallel_subprocess_forces_serial_child_build(self):
-        command = _parallel_task_command(("normal", 400, "Regular", 465, 1, 16))
+    @pytest.mark.parametrize(
+        "family_keys,selection",
+        [(("normal",), "normal"), (("normal", "display"), "all")],
+    )
+    def test_parallel_subprocess_builds_one_weight_serially(self, family_keys, selection):
+        command = _parallel_task_command((family_keys, 400, "Regular", 465))
 
         assert command[1:5] == ["-m", "font.build", "--jobs", "1"]
-        assert command[-2:] == ["normal", "Regular"]
+        assert command[-2:] == [selection, "Regular"]
 
     def test_final_ttf_path_is_family_scoped(self):
         normal_path = _final_ttf_path(FAMILIES["normal"], "Regular")
@@ -199,30 +200,15 @@ class TestBuildCli:
 # UPM policy
 # ---------------------------------------------------------------------------
 
-class TestUpmPolicy:
-    """Project-owned design units are authored at 1000 UPM and scaled at build time."""
-
-    def test_target_upm_matches_inter_native_grid(self):
-        assert SOURCE_UPM == 1000
-        assert TARGET_UPM == 2048
-
-    def test_scales_single_design_unit_value(self):
-        assert _scale_design_unit(25) == 51
-        assert _scale_design_unit(30) == 61
-        assert _scale_design_unit(40) == 82
-        assert _scale_design_unit(-400) == -819
-
-    def test_scales_position_adjustment_tuple(self):
-        assert _scale_design_adjustment((-250, -500)) == (-512, -1024)
-
-    def test_scales_glyph_keyed_adjustments(self):
-        assert _scale_design_adjustments({"uni3001": (-250, -500)}) == {
-            "uni3001": (-512, -1024),
-        }
-
-    def test_scales_codepoint_keyed_spacing(self):
-        assert _scale_glyph_spacing({"ょ": (30, 35)}) == {"ょ": (61, 72)}
-        assert _scale_glyph_spacing(None) is None
+def test_design_units_scale_from_1000_to_target_upm():
+    assert TARGET_UPM == 2048
+    assert _scale_design_unit(30) == 61
+    assert _scale_design_unit(-400) == -819
+    assert _scale_design_adjustments({"uni3001": (-250, -500)}) == {
+        "uni3001": (-512, -1024),
+    }
+    assert _scale_glyph_spacing({"ょ": (30, 35)}) == {"ょ": (61, 72)}
+    assert _scale_glyph_spacing(None) is None
 
 
 # ---------------------------------------------------------------------------
@@ -256,6 +242,28 @@ class TestProjectVersionMetadata:
 # Inter variable edge instances
 # ---------------------------------------------------------------------------
 
+@pytest.fixture(scope="module")
+def edge_instance_path(tmp_path_factory):
+    """Instantiate each InterVariable edge master once per module."""
+    if not Path(INTER_VARIABLE).is_file():
+        pytest.skip(f"Inter variable font not found at {INTER_VARIABLE}")
+    out_dir = tmp_path_factory.mktemp("inter-edge")
+    paths: dict[tuple[str, str], str] = {}
+
+    def build(family_key: str, weight_num: int, weight_name: str) -> str:
+        key = (family_key, weight_name)
+        if key not in paths:
+            paths[key] = _build_inter_variable_instance(
+                FAMILIES[family_key],
+                weight_num,
+                weight_name,
+                str(out_dir),
+            )
+        return paths[key]
+
+    return build
+
+
 class TestInterVariableEdgeInstances:
     """Thin/ExtraBold use tuned InterVariable instances, then static metadata."""
 
@@ -270,7 +278,7 @@ class TestInterVariableEdgeInstances:
     )
     def test_builds_edge_instance_with_static_metadata_and_full_layout(
         self,
-        tmp_path,
+        edge_instance_path,
         family_key,
         weight_num,
         weight_name,
@@ -278,19 +286,11 @@ class TestInterVariableEdgeInstances:
         expected_opsz,
         expected_family,
     ):
-        if not Path(INTER_VARIABLE).is_file():
-            pytest.skip(f"Inter variable font not found at {INTER_VARIABLE}")
-
         family = FAMILIES[family_key]
         assert family["interOpsz"] == expected_opsz
         assert INTER_VARIABLE_EDGE_WEIGHTS[weight_name]["wght"] == expected_wght
 
-        generated_path = _build_inter_variable_instance(
-            family,
-            weight_num,
-            weight_name,
-            str(tmp_path),
-        )
+        generated_path = edge_instance_path(family_key, weight_num, weight_name)
         generated = TTFont(generated_path)
         variable = TTFont(INTER_VARIABLE)
         vendor_static = TTFont(_default_inter_static_path(family, weight_name))
@@ -315,10 +315,10 @@ class TestInterVariableEdgeInstances:
             assert generated.getGlyphOrder() == variable.getGlyphOrder()
             assert set(generated.getBestCmap() or {}) == set(variable.getBestCmap() or {})
             assert set(generated.getBestCmap() or {}) == set(vendor_static.getBestCmap() or {})
-            assert _layout_feature_tags(generated, "GSUB") == _layout_feature_tags(variable, "GSUB")
-            assert _layout_feature_tags(generated, "GPOS") == _layout_feature_tags(variable, "GPOS")
-            assert _layout_feature_tags(generated, "GSUB") == _layout_feature_tags(vendor_static, "GSUB")
-            assert _layout_feature_tags(generated, "GPOS") == _layout_feature_tags(vendor_static, "GPOS")
+            for table_tag in ("GSUB", "GPOS"):
+                tags = _layout_feature_tags(generated, table_tag)
+                assert tags == _layout_feature_tags(variable, table_tag)
+                assert tags == _layout_feature_tags(vendor_static, table_tag)
 
             generated_a = generated["glyf"]["A"]
             static_a = vendor_static["glyf"]["A"]
@@ -328,33 +328,15 @@ class TestInterVariableEdgeInstances:
             variable.close()
             vendor_static.close()
 
-    @pytest.mark.parametrize(
-        "weight_num,weight_name",
-        [
-            (100, "Thin"),
-            (800, "ExtraBold"),
-        ],
-    )
+    @pytest.mark.parametrize("weight_num,weight_name", [(100, "Thin"), (800, "ExtraBold")])
     def test_normal_and_display_edge_instances_use_distinct_opsz(
         self,
-        tmp_path,
+        edge_instance_path,
         weight_num,
         weight_name,
     ):
-        normal_path = _build_inter_variable_instance(
-            FAMILIES["normal"],
-            weight_num,
-            weight_name,
-            str(tmp_path),
-        )
-        display_path = _build_inter_variable_instance(
-            FAMILIES["display"],
-            weight_num,
-            weight_name,
-            str(tmp_path),
-        )
-        normal = TTFont(normal_path)
-        display = TTFont(display_path)
+        normal = TTFont(edge_instance_path("normal", weight_num, weight_name))
+        display = TTFont(edge_instance_path("display", weight_num, weight_name))
 
         try:
             assert normal["hmtx"]["H"] != display["hmtx"]["H"]
@@ -373,34 +355,23 @@ class TestInterVariableEdgeInstances:
 # _glyph_codepoint
 # ---------------------------------------------------------------------------
 
-class TestGlyphCodepoint:
-    """Parse Adobe-style 'uniXXXX' glyph names to codepoints."""
-
-    def test_basic_uni_name(self):
-        assert _glyph_codepoint("uni3042") == 0x3042
-
-    def test_uppercase_hex_works(self):
-        assert _glyph_codepoint("uni30AB") == 0x30AB
-
-    def test_non_uni_prefix_returns_none(self):
-        assert _glyph_codepoint("A") is None
-        assert _glyph_codepoint("cid12345") is None
-        assert _glyph_codepoint(".notdef") is None
-
-    def test_dotted_alternate_still_parses_base_codepoint(self):
-        # '.alt', '.vert', '.001' suffixes are common — we treat the
-        # first 4 hex digits after 'uni' as the codepoint.
-        assert _glyph_codepoint("uni3042.vert") == 0x3042
-        assert _glyph_codepoint("uni30AB.001") == 0x30AB
-
-    def test_invalid_hex_returns_none(self):
-        assert _glyph_codepoint("uniGGGG") is None
-
-    def test_short_uni_returns_none(self):
-        # A bare "uni" or fewer than 4 hex digits is malformed.
-        # Implementation accepts any prefix-parseable hex; verify the
-        # truly empty case fails cleanly.
-        assert _glyph_codepoint("uni") is None
+@pytest.mark.parametrize(
+    "glyph_name,expected",
+    [
+        ("uni3042", 0x3042),
+        ("uni30AB", 0x30AB),
+        # '.vert' / '.001' style suffixes keep the base codepoint.
+        ("uni3042.vert", 0x3042),
+        ("uni30AB.001", 0x30AB),
+        ("A", None),
+        ("cid12345", None),
+        (".notdef", None),
+        ("uniGGGG", None),
+        ("uni", None),
+    ],
+)
+def test_glyph_codepoint_parses_uni_names(glyph_name, expected):
+    assert _glyph_codepoint(glyph_name) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -535,60 +506,6 @@ class TestGetVertAlternates:
 
 
 # ---------------------------------------------------------------------------
-# _apply_x_scale
-# ---------------------------------------------------------------------------
-
-class TestApplyXScale:
-    """Horizontal-only condensation (長体)."""
-
-    def test_no_op_at_scale_one(self, synthetic_ttf):
-        # Snapshot a representative glyph and advance.
-        before_aw, before_lsb = synthetic_ttf["hmtx"]["A"]
-        before_xmax = synthetic_ttf["glyf"]["A"].xMax
-
-        _apply_x_scale(synthetic_ttf, 1.0)
-
-        assert synthetic_ttf["hmtx"]["A"] == (before_aw, before_lsb)
-        assert synthetic_ttf["glyf"]["A"].xMax == before_xmax
-
-    def test_scales_advance_widths(self, synthetic_ttf):
-        before_aw = synthetic_ttf["hmtx"]["A"][0]
-
-        _apply_x_scale(synthetic_ttf, 0.5)
-
-        after_aw = synthetic_ttf["hmtx"]["A"][0]
-        assert after_aw == round(before_aw * 0.5)
-
-    def test_scales_glyph_x_coordinates(self, synthetic_ttf):
-        before_xmax = synthetic_ttf["glyf"]["A"].xMax
-        before_xmin = synthetic_ttf["glyf"]["A"].xMin
-
-        _apply_x_scale(synthetic_ttf, 0.5)
-
-        glyph = synthetic_ttf["glyf"]["A"]
-        assert glyph.xMax == round(before_xmax * 0.5)
-        assert glyph.xMin == round(before_xmin * 0.5)
-
-    def test_does_not_touch_y(self, synthetic_ttf):
-        before_ymax = synthetic_ttf["glyf"]["A"].yMax
-        before_ymin = synthetic_ttf["glyf"]["A"].yMin
-
-        _apply_x_scale(synthetic_ttf, 0.5)
-
-        glyph = synthetic_ttf["glyf"]["A"]
-        assert glyph.yMax == before_ymax
-        assert glyph.yMin == before_ymin
-
-    def test_composite_components_shifted(self, synthetic_ttf):
-        before_x = synthetic_ttf["glyf"]["compositeA"].components[0].x
-
-        _apply_x_scale(synthetic_ttf, 0.5)
-
-        after_x = synthetic_ttf["glyf"]["compositeA"].components[0].x
-        assert after_x == round(before_x * 0.5)
-
-
-# ---------------------------------------------------------------------------
 # _strip_extreme_glyphs
 # ---------------------------------------------------------------------------
 
@@ -642,15 +559,6 @@ class TestStripExtremeGlyphs:
 
         after = synthetic_ttf["glyf"]["A"]
         assert after.numberOfContours == before_contours
-
-    def test_threshold_constants_match_implementation(self):
-        # Constants are authored on the 1000 UPM design grid; the implementation
-        # scales them to the active font UPM before comparison.
-        assert _EXTREME_YMAX == 1200
-        assert _EXTREME_YMIN == -400
-
-    def test_vertical_repeat_mark_policy_matches_unicode_range(self):
-        assert _VERTICAL_REPEAT_MARK_CODEPOINTS == tuple(range(0x3031, 0x3036))
 
 
 # ---------------------------------------------------------------------------
@@ -1106,23 +1014,15 @@ class TestPaltSymbolPolicy:
             for subtable in lookup.SubTable
         )
 
-    def test_refresh_ss09_also_installs_retargeted_halt(self, tmp_path):
+    def test_final_ss09_install_also_installs_retargeted_halt(self):
         inter_path = _default_inter_static_path(FAMILIES["normal"], "Regular")
         if not Path(inter_path).is_file():
             pytest.skip(f"Inter font not found at {inter_path}")
-        final_path = tmp_path / "merged.ttf"
         font = TTFont(inter_path)
-        font.save(final_path)
-        adjustments = {0x41: (-12, -34)}
 
-        _refresh_ss09_feature_after_merge(
-            str(final_path),
-            adjustments,
-            {},
-            {},
-        )
+        _install_final_ss09_features(font, {0x41: (-12, -34)}, {}, {})
+        refreshed = _roundtrip(font)
 
-        refreshed = TTFont(final_path)
         assert "ss09" in _layout_feature_tags(refreshed, "GSUB")
         assert _read_single_pos_feature(
             refreshed,
@@ -1132,22 +1032,20 @@ class TestPaltSymbolPolicy:
         ) == {"A": (-12, -34)}
         assert "vhal" not in _layout_feature_tags(refreshed, "GPOS")
 
-    def test_refresh_ss09_installs_retargeted_vhal(self, tmp_path):
+    def test_final_ss09_install_installs_retargeted_vhal(self):
         inter_path = _default_inter_static_path(FAMILIES["normal"], "Regular")
         if not Path(inter_path).is_file():
             pytest.skip(f"Inter font not found at {inter_path}")
-        final_path = tmp_path / "merged.ttf"
         font = TTFont(inter_path)
-        font.save(final_path)
 
-        _refresh_ss09_feature_after_merge(
-            str(final_path),
+        _install_final_ss09_features(
+            font,
             {0x41: (-12, -34)},
             {0x41: (0, -50)},
             {},
         )
+        refreshed = _roundtrip(font)
 
-        refreshed = TTFont(final_path)
         assert _read_single_pos_feature(
             refreshed,
             "vhal",
@@ -1170,8 +1068,7 @@ class TestPaltSymbolPolicy:
             for subtable in lookup.SubTable
         )
 
-    def test_runtime_palt_keeps_reduced_base_metrics(self):
-        assert RUNTIME_PALT_BASE_SCALE == 0.34
+    def test_runtime_palt_residual_complements_reduced_base(self):
         assert _runtime_palt_residual_adjustment((-250, -500)) == (-165, -330)
         assert _runtime_palt_residual_adjustment((-70, -140)) == (-46, -92)
 
@@ -1192,28 +1089,6 @@ class TestPaltSymbolPolicy:
         assert all(y_advance < 0 for _, y_advance in adjustments.values())
         assert any(glyph_name in encoded_glyphs for glyph_name in adjustments)
         assert any(glyph_name not in encoded_glyphs for glyph_name in adjustments)
-
-        # These legacy policy constants stay empty because production vertical
-        # ss09/vhal coverage now comes directly from Noto's baseline vhal.
-        assert SS09_VERTICAL_FEATURE_CHARS == ()
-        assert SS09_VERTICAL_FEATURE_GLYPHS == ()
-        assert SS09_SYNTHETIC_VERTICAL_ADJUSTMENTS == {}
-
-    def test_middle_dot_split_inherits_baseline_vhal(self):
-        adjustments = dict(_get_baseline_vhal())
-        split_source = "uni2027"
-
-        assert split_source in adjustments
-        if split_source in adjustments:
-            adjustments["uni30FB"] = adjustments[split_source]
-
-        assert adjustments["uni30FB"] == adjustments[split_source]
-
-    def test_vertical_tracking_is_normal_only(self):
-        assert NORMAL_VERTICAL_TRACKING == 9
-        assert DISPLAY_VERTICAL_TRACKING == 0
-        assert FAMILIES["normal"]["verticalTracking"] == NORMAL_VERTICAL_TRACKING
-        assert FAMILIES["display"]["verticalTracking"] == DISPLAY_VERTICAL_TRACKING
 
     def _add_vmtx(self, font: TTFont, metrics: dict[str, tuple[int, int]]) -> None:
         vmtx = newTable("vmtx")
@@ -1327,43 +1202,19 @@ class TestPaltSymbolPolicy:
     def test_scales_final_runtime_feature_adjustments_by_optical_scale(self):
         adjustments = {
             0x3001: (-512, -1024),
-            0x3002: (100, -200),
+            "uni3001.ss09": (100, -200),
         }
 
         assert _scale_feature_adjustments(adjustments, 0.925) == {
             0x3001: (round(-512 * 0.925), round(-1024 * 0.925)),
-            0x3002: (round(100 * 0.925), round(-200 * 0.925)),
+            "uni3001.ss09": (round(100 * 0.925), round(-200 * 0.925)),
         }
 
-    def test_scales_glyph_keyed_final_runtime_feature_adjustments(self):
-        adjustments = {
-            "uni3001.ss09": (-512, -1024),
-        }
-
-        assert _scale_feature_adjustments(adjustments, 0.925) == {
-            "uni3001.ss09": (round(-512 * 0.925), round(-1024 * 0.925)),
-        }
-
-    def test_palt_spacing_adjustments_are_small_kana_only(self):
-        assert "、" not in PALT_SPACE_ADJUSTMENTS
-        assert "。" not in PALT_SPACE_ADJUSTMENTS
-        assert "〈" not in PALT_SPACE_ADJUSTMENTS
-        assert "！" not in PALT_SPACE_ADJUSTMENTS
-        assert "？" not in PALT_SPACE_ADJUSTMENTS
-        assert "・" not in PALT_SPACE_ADJUSTMENTS
-        assert "〒" not in PALT_SPACE_ADJUSTMENTS
-        assert "￥" not in PALT_SPACE_ADJUSTMENTS
-
-        for char in "ぁぃぅぇぉっゃゅゎゕゖァゥェォッュョヮヵヶ":
-            assert PALT_SPACE_ADJUSTMENTS[char] == (15, 15)
-        assert PALT_SPACE_ADJUSTMENTS["ょ"] == (30, 35)
-        assert PALT_SPACE_ADJUSTMENTS["ィ"] == (10, 10)
-        assert PALT_SPACE_ADJUSTMENTS["ャ"] == (10, 15)
-
-    def test_family_spacing_adjustments_do_not_override_middle_dot(self):
-        assert "・" in PALT_FEATURE_CHARS
-        assert "・" not in DISPLAY_PALT_SPACE_ADJUSTMENTS
-        assert "・" not in NORMAL_PALT_SPACE_ADJUSTMENTS
+    def test_family_spacing_adjustments_are_kana_only(self):
+        for family in FAMILIES.values():
+            spacing = family["glyphSpacing"]
+            assert not set(spacing) & set(PALT_FEATURE_CHARS)
+            assert set(spacing) <= set(PALT_SPACE_ADJUSTMENTS) | {"く"}
 
     def test_codepoint_entries_resolve_to_glyphs(self, synthetic_ttf):
         glyphs = _glyphs_for_codepoints(

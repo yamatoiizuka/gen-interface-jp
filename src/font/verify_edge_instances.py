@@ -171,10 +171,13 @@ def _verify_final_ttf(
         names_by_id: dict[int, set[str]] = {}
         for record in final_font["name"].names:
             names_by_id.setdefault(record.nameID, set()).add(record.toUnicode())
+        # Non-RIBBI weights use the legacy (ID 1/2) "<Family> <Weight>" /
+        # "Regular" pairing; the typographic names (ID 16/17) carry the split.
+        legacy_family = f"{family['familyName']} {weight_name}"
         _check(
-            family["familyName"] in names_by_id.get(1, set()),
+            legacy_family in names_by_id.get(1, set()),
             failures,
-            f"{prefix}: final legacy family name is not {family['familyName']}",
+            f"{prefix}: final legacy family name is not {legacy_family}",
         )
         _check(
             family["familyName"] in names_by_id.get(16, set()),
@@ -182,9 +185,9 @@ def _verify_final_ttf(
             f"{prefix}: final typographic family name is not {family['familyName']}",
         )
         _check(
-            weight_name in names_by_id.get(2, set()),
+            "Regular" in names_by_id.get(2, set()),
             failures,
-            f"{prefix}: final subfamily name is not {weight_name}",
+            f"{prefix}: final legacy subfamily name is not Regular",
         )
         _check(
             weight_name in names_by_id.get(17, set()),

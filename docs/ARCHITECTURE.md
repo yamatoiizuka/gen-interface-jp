@@ -17,13 +17,14 @@ consumes the published webfont package.
 └─────────────────────────────┬──────────────────────────────────────┘
                               │
         ┌─────────────────────▼──────────────────────────┐
-        │  font/build.py  (per family × per weight)       │
+        │  font/build.py  (one job per weight)            │
         │                                                 │
         │   [1/3] Bake — font-baker, base-only            │
         │         Noto wght axis → static TTF             │
         │         metadataMode=inheritBase                │
         │         output.upm=2048                         │
-        │             ↓                                   │
+        │         (shared by both families)               │
+        │             ↓  then per family:                 │
         │   [2/3] Proportionalise — proportional.py       │
         │      palt → hmtx + yakumono ss09                │
         │         tracking (hmtx + normal-family vmtx)    │
@@ -35,8 +36,9 @@ consumes the published webfont package.
         │         CJK-conventional symbols on Noto        │
         │         output.upm=2048, metricsSource=sub      │
         │         project version + manufacturer stamp    │
-        │         normalize GSUB/GPOS coverage order      │
-        │         add default-ignorable cmap fillers      │
+        │         in-memory patch, saved once:            │
+        │           coverage order, vmtx, ss09/halt/vhal, │
+        │           default-ignorable cmap fillers        │
         │         validate final cmap / glyph references  │
         │             ↓                                   │
         │   dist/ttf/  (one TTF per family × weight)      │
@@ -69,7 +71,13 @@ consumes the published webfont package.
 ### 1. Build a Font Weight (`font.build`)
 
 ```
-For each (family, weight) in FAMILIES × WEIGHTS:
+For each weight in WEIGHTS:
+  → font-baker bake: variable Noto → static TTF
+                    (dist/intermediate/NotoSansJP-<Weight>-Inst.ttf)
+                    inheritBase passes designer/OFL/version
+                    through; only weight is stamped. The bake does not
+                    depend on the family, so both families reuse it.
+For each family in FAMILIES at that weight:
   → choose Inter source:
       - ExtraLight through Bold use vendor static Inter/InterDisplay TTFs
       - Thin and ExtraBold are instantiated from InterVariable.ttf:
@@ -78,15 +86,13 @@ For each (family, weight) in FAMILIES × WEIGHTS:
         The generated static instances are stamped back to usWeightClass
         100 / 800 so output metadata follows the public weight names, not
         the internal wght-axis coordinates.
-  → font-baker bake: variable Noto → static TTF
-                    inheritBase passes designer/OFL/version
-                    through; only weight is stamped
-  → reload inst, read baseline palt and vhal from Noto Variable and scale
+  → load the shared inst, read baseline palt and vhal from Noto Variable and scale
     both to the active 2048-UPM build grid
   → bake Noto palt at full strength except ss09 yakumono,
     whose palt is split into a 34% baked base + 66% ss09 residual
     (glyphs without palt keep metrics)
-  → make_proportional bakes palt → hmtx and removes palt/vpal/halt/vhal/vkrn;
+  → make_proportional bakes palt → hmtx (ss09 yakumono via reduced_palt)
+    and removes palt/vpal/halt/vhal/vkrn;
     horizontal palt residuals and baseline vhal records are held for final
     ss09 alternates while vertical vpal/vkrn behavior is not exposed
   → _apply_tracking widens advances + half-balances LSB
@@ -107,8 +113,10 @@ For each (family, weight) in FAMILIES × WEIGHTS:
                      metricsSource=sub anchors hhea on Inter
                      project version stamped into name metadata
                      manufacturer / manufacturerURL stamped
-  → reload/save final TTF once so GSUB/GPOS coverage tables are ordered
-    by the final merged glyph IDs
+  → load the merged TTF once and patch it in memory (saved once at the
+    end): re-sort GSUB/GPOS coverage tables by the final merged glyph IDs
+    (fontTools reorderGlyphs), then rescale Japanese vmtx against the
+    in-memory proportional Noto
   → install yakumono-only ss09 against final glyph names: horizontal
     alternates use palt residuals, while vertical-form alternates use full
     baseline vhal deltas; without optional spacing, vertical writing stays
@@ -121,14 +129,27 @@ For each (family, weight) in FAMILIES × WEIGHTS:
     prevent literal composers from rendering tofu for emoji variation
     selectors or ZWJ after a base text symbol resolved to Gen Interface JP;
     format 14 UVS data is not modified.
-  → validate final TTF integrity: .notdef at GID 0, maxp count, cmap targets,
-    composite components, and GSUB/GPOS compilation
+  → save, then reload and validate final TTF integrity: .notdef at GID 0,
+    maxp count, cmap targets, composite components, and GSUB/GPOS compilation
 ```
 
-`font.build --jobs N` dispatches independent family/weight jobs in parallel.
-The Makefile uses `FONT_JOBS ?= 16`, so `make font` builds the full
-2-family × 8-weight TTF matrix concurrently by default. Intermediate Noto
-files are scoped by family and weight to keep parallel jobs from sharing paths.
+`font.build --jobs N` dispatches one job per weight in parallel; each job
+bakes Noto once and then builds every selected family from that bake. The
+Makefile uses `FONT_JOBS ?= 8`, so `make font` builds the full 2-family ×
+8-weight TTF matrix with one worker per weight. Jobs run as plain child
+interpreters (`src/parallel.py`) rather than `ProcessPoolExecutor`, whose
+spawn path has hung on macOS/pyenv (issue #33). SIGINT / SIGTERM are
+deferred while the runner is active (`deferred_signals`): they are recorded,
+checked at safe points, and re-raised only after every started child has been
+terminated and reaped (kill fallback after 10 s). A recorded signal wins
+over a child failure, which is kept as its `__cause__`. Handler swaps always run
+to completion: if a handler raises midway (for example a SIGINT taken by
+another thread, which Python still handles on the main thread), the swap is
+retried and the interruption re-raised only once every handler is set.
+Blocking both signals with `pthread_sigmask` on the calling thread narrows the
+window further where available, but is not relied on. The same cleanup applies on a child failure. `webfont.build` holds the deferral across its whole temp task
+directory lifetime. The shared Noto bake is
+scoped by weight; proportional intermediates are scoped by family and weight.
 
 ### 2. Subset for the Web (`webfont.build`)
 
@@ -259,8 +280,8 @@ Four sub-passes, all in-place on the inst:
    side, with a few optical exceptions such as small katakana i (`ィ`),
    small katakana ya (`ャ`), and small hiragana yo (`ょ`). Punctuation,
    including `U+30FB` (・), is intentionally not handled here: it passes
-   through tracking and tightens only when the explicit `ss09` feature is
-   enabled.
+   through tracking, already keeps the 34% palt base baked in by default,
+   and the explicit `ss09` feature applies the remaining tightening.
    The normal family also applies `verticalTracking = 9` design units to
    Japanese vertical-body glyphs on the pre-merge Noto intermediate. This
    updates only `vmtx.advanceHeight`; top sidebearing / vertical origin stay
@@ -268,9 +289,6 @@ Four sub-passes, all in-place on the inst:
    a slightly looser rhythm. The Display family keeps `verticalTracking = 0`.
 4. **Bbox strip** (`_strip_extreme_glyphs`) — see [Vertical metrics]
    below.
-
-Optional **horizontal scale** (`xScale` family setting, currently unused)
-runs after the above when set, condensing CJK in x without touching y.
 
 ### Stage 3 — Merge with Inter
 
@@ -340,20 +358,17 @@ layout) miss those live adjustments. Gen Interface JP avoids a fully
 monospaced fallback by baking most palt values directly into `hmtx`, and by
 baking a reduced palt fraction for optional yakumono.
 
-`make_proportional` bakes most `palt` values into the static `hmtx` so the
-font reads proportional everywhere. When `runtime_palt` is provided together
-with `runtime_palt_base_scale`, the build bakes that fraction of each runtime
-record into the base metrics. For the production build, `install_runtime_palt`
-is disabled so the residual is not exposed as live `palt`; instead it is
-captured by codepoint and later reinstalled as yakumono-only `ss09` after the
-Inter merge. The project uses
+`make_proportional` bakes `palt` values into the static `hmtx` so the
+font reads proportional everywhere. Glyphs passed as `reduced_palt` get only
+`reduced_palt_scale` of their record baked into the base metrics; the build
+captures the residual by codepoint and installs it as yakumono-only `ss09`
+after the Inter merge (never as live `palt`). The project uses
 `RUNTIME_PALT_BASE_SCALE = 0.34`, so palt-off yakumono is already partially
 tightened (`-348` for the common `-1024` palt advance on the 2048-UPM build
 grid) while enabling `ss09` reaches the former full Noto palt target.
 The production build uses `PALT_FEATURE_CHARS` (48 chars) for horizontal
-`ss09` targets. The legacy vertical target constants stay empty
-(`SS09_VERTICAL_FEATURE_CHARS = ()`, `SS09_VERTICAL_FEATURE_GLYPHS = ()`)
-because vertical coverage comes directly from Noto's baseline `vhal` records.
+`ss09` targets. Vertical coverage comes directly from Noto's baseline `vhal`
+records.
 Encoded records are captured by codepoint and unmapped vertical alternates by
 glyph name. Noto `vpal` / `vkrn` behavior is not carried into the final runtime
 surface. This avoids double-applying palt to baked kana / Latin while exposing
@@ -456,9 +471,13 @@ That layout closure preserves the final font's GSUB `ss09` and GPOS
 `halt`/`vhal` records in the relevant subsets, enabling Chromium
 `text-spacing-trim` in both writing modes in the shipped webfonts; `chws` and
 `vchw` remain absent.
-Subset WOFF2 generation honors `--jobs`; for `jobs > 1` it uses
-`ThreadPoolExecutor` rather than process workers because the macOS/pyenv
-spawn path deadlocked under the full webfont task fan-out (issue #33).
+Subset WOFF2 generation honors `--jobs` (default: CPU count; the Makefile
+passes `WEBFONT_JOBS`, also the CPU count). fontTools subsetting is pure
+Python, so threads serialize on the GIL; for `jobs > 1` the tasks are sharded
+round-robin into plain child interpreters (`python -m webfont.build
+--subset-worker <tasks.json>`, run through `src/parallel.py`). This avoids the
+`ProcessPoolExecutor` spawn path that deadlocked on macOS/pyenv under the full
+webfont task fan-out (issue #33).
 
 ### Strategies
 
@@ -546,7 +565,7 @@ after verification so URL inspection and reindexing requests remain available.
 ## Tests
 
 ```bash
-PYTHONPATH=src python3 -m pytest        # full suite (~35s)
+PYTHONPATH=src python3 -m pytest        # full suite (~10s)
 ```
 
 Tests live under `tests/`, split by surface:
@@ -555,30 +574,31 @@ Tests live under `tests/`, split by surface:
   Noto Variable for tests that need real palt / vpal / vhal / vert / cmap data, and a
   hand-built minimal TrueType (`FontBuilder`) for whole-font mutation
   tests where 17 000 Noto glyphs would be wasteful.
-- **`tests/test_font_build.py`** — CLI build selection / parallel intermediate
-  path separation, Japanese vertical body scaling, UPM design-unit scaling,
+- **`tests/test_font_build.py`** — CLI build selection / shared-bake and
+  family-scoped intermediate paths, Japanese vertical body scaling, UPM design-unit scaling,
   project-version
   metadata forwarding
   (`SOURCE_UPM = 1000`, `TARGET_UPM = 2048`), `_glyph_codepoint`, `_reverse_cmap`,
   `_is_kana_or_punct`, `_is_kana_or_punct_codepoint`,
-  `_is_cjk_codepoint`, `_get_vert_alternates`, `_apply_x_scale`, `_strip_extreme_glyphs`,
+  `_is_cjk_codepoint`, `_get_vert_alternates`, `_strip_extreme_glyphs`,
   `_add_default_ignorable_glyphs`,
   `_apply_tracking`, `_apply_vertical_tracking`, `_apply_glyph_spacing`, `_glyphs_for_codepoints`,
   `_split_cmap_codepoint_glyph`, explicit palt/ss09 spacing policy, vertical
   baseline-vhal and ss09/vhal retarget checks, final TTF integrity validation, and
-  InterVariable edge-instance source selection for Thin / ExtraBold.
+  InterVariable edge-instance source selection for Thin / ExtraBold (each
+  edge instance is built once per module and shared across assertions).
 - **`src/font/verify_edge_instances.py`** — post-build verification for
   Thin / ExtraBold edge outputs. Confirms the generated InterVariable static
   instances keep the vendor static cmap / GSUB / GPOS surface, contain no
   variation tables, use the requested `wght` / `opsz` coordinates, and that
   final TTF metadata stays at public weights 100 / 800 without leaking
-  InterVariable axis names.
-- **`tests/test_proportional.py`** — `_read_palt`, `_read_vpal`,
+  InterVariable axis names. Legacy name IDs 1/2 are expected as
+  `<Family> <Weight>` / `Regular`; IDs 16/17 carry the family / weight.
+- **`tests/test_proportional.py`** — `_read_palt`,
   `_shift_glyph_x`, `_remove_prop_features`, `make_proportional` (palt
-  baking, optional runtime-palt reinstall, runtime-palt base/residual splitting,
-  reduced palt scaling, non-palt metric preservation, optional squeeze SB sidebearing math, palt_override
-  precedence, CFF rejection, LangSys index validity post-removal), plus
-  `ss09` construction and HarfBuzz shaping.
+  baking, reduced-palt base fraction for ss09 yakumono, non-palt metric
+  preservation, palt_override precedence, CFF rejection, LangSys index
+  validity post-removal), plus `ss09` construction and HarfBuzz shaping.
 - **`tests/test_release.py`** — public distribution contracts: GitHub
   asset URL shape (referenced by the site download button), npm package
   layout including `files` glob, generated README, `cdn/*.css` entrypoints,
@@ -590,8 +610,9 @@ Tests live under `tests/`, split by surface:
 
 | File | Tests | Verifies |
 |---|---|---|
-| `test_font_build.py` | 124 | CLI build selection and parallel intermediate path separation, Japanese vertical body scaling/tracking, UPM scaling policy, project-version metadata forwarding, glyph-name parsing, reverse-cmap kana / punctuation classification, CJK classification, GSUB/GPOS walk, baseline palt/vhal policy including U+30FB split propagation, x-scale, bbox strip, default-ignorable zero-width glyph insertion, tracking, final TTF integrity validation, ss09/halt/vhal feature retargeting, final runtime feature scaling, InterVariable edge-instance compatibility |
-| `test_proportional.py` | 39 | palt/vpal extraction, cumulative SinglePos lookup reading, glyph translation, GPOS feature removal including vkrn, runtime-palt/vpal helper coverage + base/residual split + optional squeeze helper, ss09 construction + shaping including vertical no-op coverage |
+| `test_font_build.py` | 113 | CLI build selection, shared-bake / family-scoped intermediate paths, Japanese vertical body scaling/tracking, UPM scaling policy, project-version metadata forwarding, glyph-name parsing, reverse-cmap kana / punctuation classification, CJK classification, GSUB/GPOS walk, baseline palt/vhal policy, bbox strip, default-ignorable zero-width glyph insertion, tracking, final TTF integrity validation, ss09/halt/vhal feature retargeting, final runtime feature scaling, InterVariable edge-instance compatibility |
+| `test_proportional.py` | 30 | palt extraction, cumulative SinglePos lookup reading, glyph translation, GPOS feature removal including vkrn, reduced-palt base fraction, ss09 construction + shaping including vertical no-op coverage |
+| `test_parallel.py` | 12 | Child-interpreter runner: SIGTERM to the parent, a signal mid-spawn, or a signal mid-cleanup still stops and reaps every child (incl. a SIGTERM-ignoring one); a failing child raises and stops its siblings; deferred SIGINT/SIGTERM re-raise on exit (winning over a block exception), restore handlers even when a signal lands mid-restore (directly or through another thread), roll back an interrupted setup, and are not shared with other threads |
 | `test_release.py` | 2 | GitHub asset URL contract, npm package layout (files glob, license, README, self-host/CDN CSS entrypoints at root) |
 | `test_webfont_build.py` | 42 | Range merge / dedup, unicode-range formatting incl. 5-digit, JIS row mapping, subset plan placement / non-overlap / coverage, strategy parser edge cases |
 
@@ -599,22 +620,23 @@ Tests live under `tests/`, split by surface:
 
 | Command | Purpose |
 |---|---|
-| `make font` | Build TTF for both families × all weights with `FONT_JOBS ?= 16` |
+| `make font` | Build TTF for both families × all weights with `FONT_JOBS ?= 8` (one job per weight) |
 | `make verify-edge-instances` | Build Thin / ExtraBold and verify InterVariable edge instance + final TTF metadata |
 | `make webfont` | Build unicode-range subsets (depends on `font`) |
 | `make release` | Build GitHub zips + npm + Pages package (depends on `webfont`) |
-| `make webfont-benchmark` | Throttled fetch benchmark of slicing strategy |
+| `make webfont-benchmark` | Throttled fetch benchmark of slicing strategy (builds only normal Regular) |
 | `make npm-pack` | Dry-run npm package inspection |
 | `make npm-publish` | Publish to npm |
 | `make site` | Build the demo site (`site/dist/` doubles as the GitHub Pages artifact) |
 | `make serve` | Local Vite dev server for the site |
 | `make clean` | Remove `dist/` and `site/dist/` |
-| `python3 -m font.build --jobs 16 [family] [weight ...]` | Build the full matrix or a slice in parallel (e.g. `normal Regular`) |
+| `python3 -m font.build --jobs 8 [family] [weight ...]` | Build the full matrix or a slice in parallel (e.g. `normal Regular`) |
 | `python3 -m font.verify_edge_instances` | Verify built Thin / ExtraBold edge outputs |
 | `python3 -m pytest` | Run the test suite |
 
-CI: `.github/workflows/pages.yml` deploys the demo site to GitHub Pages
-on every push to `main`. Release packaging is run locally — see
+CI: `.github/workflows/pages.yml` runs the Python tests and builds the demo
+site on every pull request and push to `main`; only pushes to `main` (or a
+manual dispatch) upload the artifact and deploy it to GitHub Pages. Release packaging is run locally — see
 `src/release/README.md` for the `make release` + `gh release upload`
 flow.
 
@@ -639,7 +661,6 @@ flow.
   metadata.
 - `fonttools` (>= 4.67.0) — Font parsing, instancer, subsetter, GPOS / GSUB
   table editing.
-- `freetype-py` — Used by tooling around metrics inspection.
 - `brotli` (>= 1.2.1) — Explicit WOFF2 compression dependency.
 - `pytest` (>= 9.1.1) — Test runner.
 - `uharfbuzz` (>= 0.57.0) — Development dependency so shaping tests run rather than skip.

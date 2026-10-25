@@ -17,13 +17,14 @@ Gen Interface JP はフォントビルドパイプライン (アプリ/UI なし
 └─────────────────────────────┬──────────────────────────────────────┘
                               │
         ┌─────────────────────▼──────────────────────────┐
-        │  font/build.py  (ファミリー × ウェイトごと)       │
+        │  font/build.py  (ウェイトごとに 1 job)            │
         │                                                 │
         │   [1/3] Bake — font-baker, base-only            │
         │         Noto wght → static TTF                  │
         │         metadataMode=inheritBase                │
         │         output.upm=2048                         │
-        │             ↓                                   │
+        │         (両ファミリーで共有)                     │
+        │             ↓  以降ファミリーごと:               │
         │   [2/3] Proportionalise — proportional.py       │
         │      palt → hmtx + 約物 ss09                    │
         │         tracking (hmtx + normal family vmtx)   │
@@ -35,8 +36,9 @@ Gen Interface JP はフォントビルドパイプライン (アプリ/UI なし
         │         記号は Noto を維持                        │
         │         output.upm=2048, metricsSource=sub      │
         │         project version + manufacturer 刻印      │
-        │         GSUB/GPOS coverage order 正規化          │
-        │         default-ignorable cmap filler 追加       │
+        │         メモリ上で patch し 1 回だけ保存:        │
+        │           coverage order, vmtx, ss09/halt/vhal, │
+        │           default-ignorable cmap filler         │
         │         final cmap / glyph reference 検証        │
         │             ↓                                   │
         │   dist/ttf/  (ファミリー × ウェイトごとに TTF)    │
@@ -69,7 +71,13 @@ Gen Interface JP はフォントビルドパイプライン (アプリ/UI なし
 ### 1. フォントウェイトのビルド (`font.build`)
 
 ```
-FAMILIES × WEIGHTS の各組合せに対して:
+WEIGHTS の各ウェイトに対して:
+  → font-baker bake: variable Noto → static TTF
+                    (dist/intermediate/NotoSansJP-<Weight>-Inst.ttf)
+                    inheritBase で designer/OFL/version を継承
+                    weight だけを上書き。bake はファミリーに依存しない
+                    ため、両ファミリーで再利用する
+そのウェイトの FAMILIES 各ファミリーに対して:
   → Inter source を選択:
       - ExtraLight から Bold は vendor の static Inter/InterDisplay TTF
       - Thin と ExtraBold は InterVariable.ttf から static instance を生成:
@@ -78,15 +86,12 @@ FAMILIES × WEIGHTS の各組合せに対して:
         生成後の static instance は usWeightClass 100 / 800 に戻し、
         公開ウェイト名の metadata が内部 wght 座標に引きずられない
         ようにする。
-  → font-baker bake: variable Noto → static TTF
-                    inheritBase で designer/OFL/version を継承
-                    weight だけを上書き
-  → inst を再読込し、Noto Variable の baseline palt / vhal を active
+  → 共有 inst を読み込み、Noto Variable の baseline palt / vhal を active
     2048-UPM build grid へ scale して使う
   → ss09 約物を除き Noto の palt エントリを全量で焼き込み
     ss09 約物は 34% を base に焼き、66% を ss09 残差として保持
     (palt なしグリフはメトリクス維持)
-  → make_proportional で palt → hmtx に焼き込み
+  → make_proportional で palt → hmtx に焼き込み (ss09 約物は reduced_palt)
     palt/vpal/halt/vhal/vkrn を削除; 横方向の palt 残差と baseline vhal
     record を final ss09 用に保持し、縦方向の vpal/vkrn 挙動は公開しない
   → _apply_tracking で advance を広げ LSB を半分シフト
@@ -108,8 +113,10 @@ FAMILIES × WEIGHTS の各組合せに対して:
                      metricsSource=sub で Inter 基準の hhea を採用
                      project version を name metadata に刻印
                      manufacturer / manufacturerURL を刻印
-  → final TTF を一度 reload/save し、GSUB/GPOS coverage を
-    merge 後の glyph ID 順に正規化
+  → merge 後の TTF を一度だけ読み込み、メモリ上で patch して最後に 1 回
+    保存する: まず GSUB/GPOS coverage を merge 後の glyph ID 順に正規化
+    (fontTools reorderGlyphs) し、メモリ上の proportional Noto を基準に
+    和文 vmtx を再スケール
   → final glyph 名に対して yakumono-only ss09 を生成: 横方向 alternate は
     palt 残差、縦組み form alternate は baseline vhal の全量を使う;
     optional spacing 無効時の縦組みは基本の全角ベタ組を維持
@@ -121,14 +128,27 @@ FAMILIES × WEIGHTS の各組合せに対して:
     Gen Interface JP に解決された絵文字兼用テキスト記号の直後に variation
     selector や ZWJ が来たとき、literal なコンポーザーが tofu 表示するのを防ぐ。
     format 14 UVS は変更しない
-  → final TTF の整合性を検証: .notdef が GID 0、maxp count、cmap target、
-    composite component、GSUB/GPOS compile
+  → 保存後に再読込して final TTF の整合性を検証: .notdef が GID 0、
+    maxp count、cmap target、composite component、GSUB/GPOS compile
 ```
 
-`font.build --jobs N` は family/weight ごとに独立した job を並列実行する。
-Makefile は `FONT_JOBS ?= 16` を使うため、`make font` はデフォルトで
-2 ファミリー × 8 ウェイトの TTF matrix を並列ビルドする。parallel job 同士が
-同じ path を共有しないよう、Noto intermediate は family と weight ごとに分ける。
+`font.build --jobs N` はウェイトごとに 1 job を並列実行する。各 job は Noto を
+1 回だけ bake し、その結果から選択された全ファミリーをビルドする。Makefile は
+`FONT_JOBS ?= 8` を使うため、`make font` は 2 ファミリー × 8 ウェイトの TTF
+matrix をウェイトごとに 1 worker で並列ビルドする。job は
+`ProcessPoolExecutor` ではなく素の子インタプリタ (`src/parallel.py`) で実行する
+(spawn 経路が macOS/pyenv でハングしたため、issue #33)。runner の実行中は
+SIGINT / SIGTERM を遅延させる (`deferred_signals`): 受けたシグナルは記録して
+安全な位置で確認し、起動済みの子を全て terminate・回収してから再送出する
+(10 秒で終わらなければ kill)。記録したシグナルは子の失敗より優先し、失敗は
+`__cause__` として残す。ハンドラの切り替えは必ず最後まで完了させる: 途中で
+ハンドラが例外を送出しても (例えば別スレッドが受けた SIGINT も Python は
+メインスレッドで処理する)、切り替えをやり直し、全てのハンドラを設定し終えて
+から割り込みを再送出する。利用できる環境では呼び出しスレッドで
+`pthread_sigmask` により両シグナルを保留して隙間をさらに狭めるが、
+保証はそれに依存しない。子の失敗時も同じ後始末を行う。`webfont.build` は一時タスク
+ディレクトリの存続期間全体でこの遅延を保持する。共有 Noto bake は
+weight ごと、proportional intermediate は family と weight ごとに分ける。
 
 ### 2. Web 用サブセット化 (`webfont.build`)
 
@@ -252,16 +272,14 @@ inst に対して 4 つのサブパスを in-place で実行:
    足す。大半の小書き仮名は左右 15 units を基準にしつつ、カタカナの
    小書き「ィ」「ャ」や、ひらがなの小書き「ょ」などは見え方に合わせて
    個別値を持つ。`U+30FB` (・) を含む約物はここでは扱わない: tracking は
-   通常どおり通し、横方向の詰めは明示的な `ss09` feature に任せる。
+   通常どおり通し、palt の 34% は既定で base に焼き込み済みで、残りの詰めを
+   明示的な `ss09` feature が担う。
    normal family ではさらに `verticalTracking = 9` 設計 units を、merge 前の
    Noto 中間 font 上の和文 vertical-body glyph に適用する。これは
    `vmtx.advanceHeight` だけを増やし、top sidebearing / 縦 origin は動かさない。
    縦組みの表示箱は維持したまま、縦方向の送りだけを少し広げる。Display
    family は `verticalTracking = 0` のまま。
 4. **bbox 除去** (`_strip_extreme_glyphs`) — 下記 [垂直メトリクス] 参照。
-
-オプションの **横スケール** (`xScale` 設定、現在未使用) は上記の後に
-動き、CJK を縦方向は触らず横だけ縮める。
 
 ### Stage 3 — Inter とマージ
 
@@ -330,18 +348,15 @@ em-square を占有し、`palt` GPOS が runtime に kana / Latin を光学的�
 約物にも reduced palt 分を base に焼くことで、palt 無効時も完全な等幅
 フォールバックにならないようにする。
 
-`make_proportional` は多くの `palt` 値を static の `hmtx` に焼き込む。
-`runtime_palt` と `runtime_palt_base_scale` が指定された場合は、その割合を
-base metrics に焼き込む。production build では `install_runtime_palt` を無効化し、
-残差を live `palt` としては公開せず、codepoint 単位で保持して Inter merge 後の
-yakumono-only `ss09` として再生成する。本プロジェクトでは
+`make_proportional` は `palt` 値を static の `hmtx` に焼き込む。
+`reduced_palt` に渡したグリフは record の `reduced_palt_scale` 分だけを base
+metrics に焼き込み、build は残差を codepoint 単位で保持して Inter merge 後の
+yakumono-only `ss09` として生成する (live `palt` としては公開しない)。本プロジェクトでは
 `RUNTIME_PALT_BASE_SCALE = 0.34` を使うため、palt-off の約物はすでに部分的に
 詰まり (2048-UPM build grid 上の典型的な `-1024` palt advance なら `-348`)、
 `ss09` を有効にすると従来の Noto full palt 目標まで到達する。
 production build では横方向の `ss09` target に `PALT_FEATURE_CHARS`
-(48 文字) を使う。legacy の縦方向 target 定数
-(`SS09_VERTICAL_FEATURE_CHARS = ()`, `SS09_VERTICAL_FEATURE_GLYPHS = ()`) は空の
-ままだが、縦方向 coverage は Noto baseline `vhal` record から直接得る。encode
+(48 文字) を使う。縦方向 coverage は Noto baseline `vhal` record から直接得る。encode
 された record は codepoint、unmapped vertical alternate は glyph 名で保持する。
 Noto の `vpal` / `vkrn` 挙動は final runtime surface へ持ち込まない。
 これにより、焼き込み済みの kana / Latin に palt が二重適用されることを
@@ -444,9 +459,12 @@ Inter の Latin 専用挙動 (各行のグリフに応じた行高動的調整) 
 この layout closure により final font の GSUB `ss09` と GPOS `halt` / `vhal` は
 該当 subset に保持され、出荷 webfont でも Chromium の `text-spacing-trim` が
 両 writing mode で有効になる。`chws` と `vchw` は引き続き存在しない。
-サブセット WOFF2 の生成は `--jobs` に従い、`jobs > 1` ではプロセスではなく
-`ThreadPoolExecutor` を使う。macOS/pyenv の spawn 経路が webfont 全体の大量
-タスク投入でデッドロックしたため (issue #33)。
+サブセット WOFF2 の生成は `--jobs` に従う (デフォルトは CPU 数。Makefile も
+`WEBFONT_JOBS` として CPU 数を渡す)。fontTools の subset は pure Python のため
+スレッドでは GIL で直列化される。`jobs > 1` ではタスクを round-robin で分割し、
+素の子インタプリタ (`python -m webfont.build --subset-worker <tasks.json>`、
+`src/parallel.py` 経由) で実行する。macOS/pyenv で webfont 全体の大量タスク投入時に
+デッドロックした `ProcessPoolExecutor` の spawn 経路 (issue #33) は使わない。
 
 ### ストラテジー
 
@@ -532,7 +550,7 @@ GitHub Pages のデプロイは `.github/workflows/pages.yml`
 ## テスト
 
 ```bash
-PYTHONPATH=src python3 -m pytest        # 全テスト (~35 秒)
+PYTHONPATH=src python3 -m pytest        # 全テスト (~10 秒)
 ```
 
 テストは表面ごとに `tests/` 直下に分割:
@@ -541,28 +559,29 @@ PYTHONPATH=src python3 -m pytest        # 全テスト (~35 秒)
   が必要なテスト用に Noto Variable のサブセットをセッション単位でキャッシュ;
   全グリフ走査が必要な mutation テスト用には `FontBuilder` で組み立てた
   最小 TrueType (Noto 17000 グリフを毎回触るのは無駄)。
-- **`tests/test_font_build.py`** — CLI build selection / parallel intermediate
-  path separation、和文 vertical body scaling、UPM 設計値換算、project-version metadata
+- **`tests/test_font_build.py`** — CLI build selection / 共有 bake と
+  family 別 intermediate path、和文 vertical body scaling、UPM 設計値換算、project-version metadata
   forwarding
   (`SOURCE_UPM = 1000`, `TARGET_UPM = 2048`)、`_glyph_codepoint`, `_reverse_cmap`,
   `_is_kana_or_punct`, `_is_kana_or_punct_codepoint`,
-  `_is_cjk_codepoint`, `_get_vert_alternates`, `_apply_x_scale`, `_strip_extreme_glyphs`,
+  `_is_cjk_codepoint`, `_get_vert_alternates`, `_strip_extreme_glyphs`,
   `_add_default_ignorable_glyphs`,
   `_apply_tracking`, `_apply_vertical_tracking`, `_apply_glyph_spacing`, `_glyphs_for_codepoints`,
   `_split_cmap_codepoint_glyph`、明示的な palt/ss09 spacing 方針、
   baseline vhal と縦方向 ss09/vhal retarget、final TTF integrity validation、
-  Thin / ExtraBold 用の InterVariable edge instance source 選択。
+  Thin / ExtraBold 用の InterVariable edge instance source 選択 (edge instance は
+  module 単位で 1 回だけ生成して共有)。
 - **`src/font/verify_edge_instances.py`** — Thin / ExtraBold のビルド後検証。
   生成された InterVariable static instance が vendor static と同じ cmap /
   GSUB / GPOS 表面を保ち、variation table を残さず、指定 `wght` / `opsz`
   座標になっていること、さらに final TTF の metadata が public weight
   100 / 800 のままで InterVariable axis 名を漏らさないことを確認する。
-- **`tests/test_proportional.py`** — `_read_palt`, `_read_vpal`,
+  legacy name ID 1/2 は `<Family> <Weight>` / `Regular`、ID 16/17 が
+  family / weight を持つ前提で検証する。
+- **`tests/test_proportional.py`** — `_read_palt`,
   `_shift_glyph_x`, `_remove_prop_features`, `make_proportional` (palt
-  ベイク、optional runtime-palt 再生成、runtime-palt の base/residual 分割、
-  reduced palt scale、palt なしグリフのメトリクス維持、
-  オプションの squeeze SB sidebearing 計算、
-  palt_override の優先、CFF 拒否、feature 削除後の LangSys index 整合性)、
+  ベイク、ss09 約物向け reduced palt の base 焼き込み、palt なしグリフの
+  メトリクス維持、palt_override の優先、CFF 拒否、feature 削除後の LangSys index 整合性)、
   さらに `ss09` 生成と HarfBuzz shaping。
 - **`tests/test_release.py`** — 公開配布の契約: GitHub アセット URL の形
   (サイトのダウンロードボタンが参照)、npm パッケージのレイアウト
@@ -575,8 +594,9 @@ PYTHONPATH=src python3 -m pytest        # 全テスト (~35 秒)
 
 | ファイル | テスト数 | 検証内容 |
 |---|---|---|
-| `test_font_build.py` | 124 | CLI build selection / parallel intermediate path separation、和文 vertical body scaling/tracking、UPM 換算ポリシー、project-version metadata forwarding、グリフ名パース、reverse-cmap kana / 句読点分類、CJK 分類、GSUB/GPOS 走査、U+30FB split 伝播を含む baseline palt/vhal 方針、x-scale、bbox 除去、default-ignorable zero-width glyph 追加、tracking、ss09/halt/vhal feature の retarget、final TTF integrity validation、final runtime feature scaling、InterVariable edge instance 互換性 |
-| `test_proportional.py` | 39 | palt/vpal 抽出、SinglePos lookup の加算読み取り、グリフ平行移動、vkrn を含む GPOS feature 削除、runtime-palt/vpal helper coverage + base/residual 分割 + optional squeeze helper、ss09 生成 + 縦方向 no-op を含む shaping |
+| `test_font_build.py` | 113 | CLI build selection / 共有 bake と family 別 intermediate path、和文 vertical body scaling/tracking、UPM 換算ポリシー、project-version metadata forwarding、グリフ名パース、reverse-cmap kana / 句読点分類、CJK 分類、GSUB/GPOS 走査、baseline palt/vhal 方針、bbox 除去、default-ignorable zero-width glyph 追加、tracking、ss09/halt/vhal feature の retarget、final TTF integrity validation、final runtime feature scaling、InterVariable edge instance 互換性 |
+| `test_proportional.py` | 30 | palt 抽出、SinglePos lookup の加算読み取り、グリフ平行移動、vkrn を含む GPOS feature 削除、reduced palt の base 焼き込み、ss09 生成 + 縦方向 no-op を含む shaping |
+| `test_parallel.py` | 12 | 子インタプリタ runner: 親への SIGTERM、子の起動中・後始末中のシグナルでも全ての子 (SIGTERM を無視する子を含む) を停止・回収、子の失敗時は例外を送出し残りの子を停止、遅延した SIGINT/SIGTERM がブロック終了時に再送出される (ブロック内の例外より優先) こと、復元中にシグナルが (直接または別スレッド経由で) 届いてもハンドラが復元されること、設定が中断されたら元に戻すこと、他スレッドと状態を共有しないこと |
 | `test_release.py` | 2 | GitHub アセット URL 契約、npm パッケージレイアウト (files glob、license、README、self-host/CDN CSS root 配置) |
 | `test_webfont_build.py` | 42 | 範囲マージ / 重複除去、5 桁 hex 含む unicode-range、JIS 区マッピング、サブセット計画の配置 / 非重複 / 完全カバレッジ、ストラテジーパーサーのエッジケース |
 
@@ -584,22 +604,23 @@ PYTHONPATH=src python3 -m pytest        # 全テスト (~35 秒)
 
 | コマンド | 用途 |
 |---|---|
-| `make font` | `FONT_JOBS ?= 16` で全ファミリー × 全ウェイトの TTF を生成 |
+| `make font` | `FONT_JOBS ?= 8` (ウェイトごとに 1 job) で全ファミリー × 全ウェイトの TTF を生成 |
 | `make verify-edge-instances` | Thin / ExtraBold をビルドし、InterVariable edge instance と final TTF metadata を検証 |
 | `make webfont` | unicode-range サブセットを生成 (`font` 依存) |
 | `make release` | GitHub zip + npm + Pages パッケージ生成 (`webfont` 依存) |
-| `make webfont-benchmark` | スライス方式の throttled fetch ベンチ |
+| `make webfont-benchmark` | スライス方式の throttled fetch ベンチ (normal Regular のみビルド) |
 | `make npm-pack` | npm パッケージのドライラン検査 |
 | `make npm-publish` | npm に publish |
 | `make site` | デモサイトのビルド (`site/dist/` がそのまま GitHub Pages artifact) |
 | `make serve` | サイトのローカル Vite 開発サーバー |
 | `make clean` | `dist/` と `site/dist/` を削除 |
-| `python3 -m font.build --jobs 16 [family] [weight ...]` | 全 matrix または部分ビルドを並列実行 (例: `normal Regular`) |
+| `python3 -m font.build --jobs 8 [family] [weight ...]` | 全 matrix または部分ビルドを並列実行 (例: `normal Regular`) |
 | `python3 -m font.verify_edge_instances` | ビルド済み Thin / ExtraBold edge output を検証 |
 | `python3 -m pytest` | テスト実行 |
 
-CI: `.github/workflows/pages.yml` が `main` への push ごとにデモサイトを
-GitHub Pages にデプロイ。リリースパッケージングはローカル実行に統一 —
+CI: `.github/workflows/pages.yml` は pull request と `main` への push の
+たびに Python テストとデモサイトのビルドを実行し、`main` への push (または
+手動実行) のときだけ artifact をアップロードして GitHub Pages にデプロイする。リリースパッケージングはローカル実行に統一 —
 詳細は `src/release/README.md` の `make release` + `gh release upload`
 の手順を参照。
 
@@ -622,7 +643,6 @@ GitHub Pages にデプロイ。リリースパッケージングはローカル�
   designer URL metadata による macOS Font Book の警告を避けられる。
 - `fonttools` (>= 4.67.0) — フォントパース、instancer、subsetter、
   GPOS / GSUB の編集。
-- `freetype-py` — メトリクス検証ツーリングで使用。
 - `brotli` (>= 1.2.1) — WOFF2 圧縮の明示的な依存。
 - `pytest` (>= 9.1.1) — テストランナー。
 - `uharfbuzz` (>= 0.57.0) — shaping テストを skip せず実行するための開発依存。

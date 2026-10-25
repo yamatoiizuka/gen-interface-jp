@@ -2,15 +2,18 @@
 """
 Build Gen Interface JP font families.
 
-Shared pipeline per weight:
+Pipeline per weight:
   1. Bake Noto Sans JP variable → static TTF  (font-baker, base-only,
                                                 metadataMode=inheritBase,
-                                                output.upm=2048)
+                                                output.upm=2048; shared by
+                                                both families)
+  Then per family:
   2. Convert to proportional metrics           (palt-based, proportional.py)
   3. Apply tracking                            (horizontal hmtx + vertical vmtx)
   4. Merge Inter/InterDisplay + proportional Noto  (font-baker, with
      subFont.excludeCodepoints to keep CJK-conventional symbols on Noto)
-  5. Add zero-width default-ignorable glyphs    (VS1-16 + ZWNJ/ZWJ)
+  5. Patch the merged font in memory and save once (vmtx body scale,
+     ss09/halt/vhal, zero-width VS1-16 + ZWNJ/ZWJ)
   6. Validate final cmap / glyph order / layout-table integrity
 
 Families:
@@ -29,14 +32,13 @@ import copy
 from contextlib import contextmanager
 import logging
 import os
-import subprocess
 import sys
-import time
 
 from fontTools.ttLib import TTFont
 from fontTools.ttLib.reorderGlyphs import reorderGlyphs
 from fontTools.varLib import instancer
 from merge_fonts import merge_fonts, parse_codepoint_list
+from parallel import run_parallel
 from project_metadata import project_version as read_project_version
 from .proportional import (
     _install_halt_feature,
@@ -181,13 +183,6 @@ RUNTIME_PALT_BASE_SCALE = 0.34
 _baseline_palt_cache: dict[str, tuple[int, int]] | None = None
 _baseline_vhal_cache: dict[str, tuple[int, int]] | None = None
 
-# Vertical writing is treated as a fallback path for this UI-focused family.
-# Keep default metrics on a basic full-width grid, but derive optional vertical
-# ss09/vhal behavior directly from Noto's baseline vhal records.
-SS09_VERTICAL_FEATURE_CHARS: tuple[str, ...] = ()
-SS09_VERTICAL_FEATURE_GLYPHS: tuple[str, ...] = ()
-SS09_SYNTHETIC_VERTICAL_ADJUSTMENTS: dict[str, tuple[int, int]] = {}
-
 # Glyphs listed here get full Noto palt baked like every other non-optional
 # palt glyph, then receive explicit hmtx spacing after tracking. Keep this
 # list limited to small kana that need breathing room after palt; yakumono
@@ -227,12 +222,6 @@ DISPLAY_TRACKING = 0
 DISPLAY_TRACKING_KANA = 0
 DISPLAY_VERTICAL_TRACKING = 0
 
-NORMAL_PALT_SPACE_ADJUSTMENTS = {
-    **PALT_SPACE_ADJUSTMENTS,
-}
-
-DISPLAY_PALT_SPACE_ADJUSTMENTS = PALT_SPACE_ADJUSTMENTS
-
 
 FAMILIES = {
     "normal": {
@@ -252,7 +241,7 @@ FAMILIES = {
         # tighten. Populate when a specific glyph needs a manual margin
         # nudge that palt + tracking alone can't reach.
         "glyphSpacing": {
-            **NORMAL_PALT_SPACE_ADJUSTMENTS,
+            **PALT_SPACE_ADJUSTMENTS,
             "く": (30, 0),
         },
     },
@@ -268,7 +257,7 @@ FAMILIES = {
         "runtimePalt": PALT_FEATURE_CHARS,
         "folderPrefix": "GenInterfaceJPDisplay",
         "glyphSpacing": {
-            **DISPLAY_PALT_SPACE_ADJUSTMENTS,
+            **PALT_SPACE_ADJUSTMENTS,
             "く": (30, 0),
         },
     },
@@ -674,113 +663,6 @@ def _split_cmap_codepoint_glyph(
 
 
 # ---------------------------------------------------------------------------
-# Horizontal scale (長体 / condensed)
-# ---------------------------------------------------------------------------
-
-def _apply_x_scale(font: TTFont, scale: float) -> None:
-    """Apply a horizontal-only scale (長体) to glyphs, hmtx, and GPOS.
-
-    font-baker only supports uniform scale during merge, so condensing CJK
-    relative to Latin has to happen *before* the merge step on the base
-    font. This function squeezes Noto in x only — y stays untouched —
-    then font-baker's uniform scale on top preserves the modified x:y
-    ratio. GPOS X values (kerning, mark positioning) are scaled to match
-    so kerning pairs continue to land where the design intends.
-    """
-    if scale == 1.0:
-        return
-
-    # Scale glyf coordinates and bbox.
-    glyf = font["glyf"]
-    for gname in font.getGlyphOrder():
-        g = glyf[gname]
-        if g.isComposite():
-            for component in g.components:
-                component.x = round(component.x * scale)
-        elif g.numberOfContours > 0:
-            coords = g.coordinates
-            for i in range(len(coords)):
-                x, y = coords[i]
-                coords[i] = (round(x * scale), y)
-            if hasattr(g, "xMin") and g.xMin is not None:
-                g.xMin = round(g.xMin * scale)
-                g.xMax = round(g.xMax * scale)
-
-    # Scale advance widths and LSBs.
-    hmtx = font["hmtx"]
-    for gname in list(hmtx.metrics.keys()):
-        aw, lsb = hmtx.metrics[gname]
-        hmtx.metrics[gname] = (round(aw * scale), round(lsb * scale))
-
-    # Scale GPOS X values (kerning, mark positioning, etc.).
-    gpos = font.get("GPOS")
-    if gpos is not None and gpos.table and gpos.table.LookupList:
-        for lookup in gpos.table.LookupList.Lookup:
-            for st in lookup.SubTable:
-                _scale_gpos_x(st, scale)
-
-
-def _scale_gpos_x(st, scale: float) -> None:
-    """Scale every X-direction value in a GPOS subtable in place.
-
-    Walks SinglePos (type 1), PairPos formats 1 and 2 (type 2), and the
-    mark-anchor families (MarkArray / Mark1Array / Mark2Array, BaseArray).
-    Subtable types not listed here — cursive attachment (type 3),
-    contextual positioning (types 7 / 8), Extension (type 9 — handled by
-    the caller via subtable unwrapping) — are not used by Noto Sans JP
-    in any consequential way for our pipeline, so this targeted walk
-    suffices.
-    """
-    def scale_value_record(vr):
-        if vr is None:
-            return
-        if getattr(vr, "XPlacement", None) is not None:
-            vr.XPlacement = round(vr.XPlacement * scale)
-        if getattr(vr, "XAdvance", None) is not None:
-            vr.XAdvance = round(vr.XAdvance * scale)
-
-    def scale_anchor(anchor):
-        if anchor is not None and hasattr(anchor, "XCoordinate"):
-            anchor.XCoordinate = round(anchor.XCoordinate * scale)
-
-    # SinglePos (type 1)
-    if hasattr(st, "Value"):
-        v = st.Value
-        if isinstance(v, list):
-            for vr in v:
-                scale_value_record(vr)
-        else:
-            scale_value_record(v)
-
-    # PairPos format 1
-    if hasattr(st, "PairSet") and st.PairSet:
-        for ps in st.PairSet:
-            for pvr in ps.PairValueRecord:
-                scale_value_record(pvr.Value1)
-                scale_value_record(pvr.Value2)
-
-    # PairPos format 2
-    if hasattr(st, "Class1Record") and st.Class1Record:
-        for c1r in st.Class1Record:
-            for c2r in c1r.Class2Record:
-                scale_value_record(c2r.Value1)
-                scale_value_record(c2r.Value2)
-
-    # Mark anchors (MarkArray, BaseArray, LigatureArray)
-    for attr in ("MarkArray", "Mark1Array", "Mark2Array"):
-        ma = getattr(st, attr, None)
-        if ma and hasattr(ma, "MarkRecord"):
-            for mr in ma.MarkRecord:
-                scale_anchor(mr.MarkAnchor)
-    for attr in ("BaseArray",):
-        ba = getattr(st, attr, None)
-        if ba and hasattr(ba, "BaseRecord"):
-            for br in ba.BaseRecord:
-                for anchor in br.BaseAnchor or []:
-                    scale_anchor(anchor)
-
-
-# ---------------------------------------------------------------------------
 # Bbox / head-table cleanup
 # ---------------------------------------------------------------------------
 
@@ -952,18 +834,6 @@ def _add_default_ignorable_glyphs(font: TTFont) -> int:
     return len(to_add)
 
 
-def _add_default_ignorable_glyphs_to_ttf(font_path: str) -> int:
-    """Load a final TTF, add default-ignorable glyphs, and save if changed."""
-    font = TTFont(font_path)
-    try:
-        added = _add_default_ignorable_glyphs(font)
-        if added:
-            font.save(font_path)
-        return added
-    finally:
-        font.close()
-
-
 # ---------------------------------------------------------------------------
 # Tracking
 # ---------------------------------------------------------------------------
@@ -1023,7 +893,6 @@ def _vertical_body_extra_codepoints() -> set[int]:
         (
             *TRACKING_IGNORE_CODEPOINTS,
             *PALT_FEATURE_CHARS,
-            *SS09_VERTICAL_FEATURE_CHARS,
             *PALT_SPACE_ADJUSTMENTS.keys(),
         )
     )
@@ -1039,7 +908,6 @@ def _vertical_body_glyphs(font: TTFont) -> set[str]:
         if _is_japanese_vertical_body_codepoint(cp) or cp in extra_codepoints
     }
     glyphs.update(_get_vert_alternates(font))
-    glyphs.update(SS09_VERTICAL_FEATURE_GLYPHS)
     return glyphs
 
 
@@ -1120,30 +988,6 @@ def _scale_vertical_body_metrics(
             adjusted += 1
 
     return adjusted
-
-
-def _scale_vertical_body_metrics_after_merge(
-    final_path: str,
-    source_path: str,
-    scale: float,
-    baseline_offset: int,
-) -> int:
-    """Apply Japanese vmtx body scaling to a merged final font on disk."""
-    font = TTFont(final_path)
-    source_font = TTFont(source_path)
-    try:
-        adjusted = _scale_vertical_body_metrics(
-            font,
-            source_font,
-            scale,
-            baseline_offset,
-        )
-        if adjusted:
-            font.save(final_path)
-        return adjusted
-    finally:
-        font.close()
-        source_font.close()
 
 
 def _apply_vertical_tracking(
@@ -1306,13 +1150,13 @@ def _retarget_named_adjustments(
     return retargeted
 
 
-def _refresh_ss09_feature_after_merge(
-    final_path: str,
+def _install_final_ss09_features(
+    font: TTFont,
     ss09_punctuation_by_codepoint: dict[int, tuple[int, int]],
     ss09_vertical_by_codepoint: dict[int, tuple[int, int]],
     ss09_vertical_by_glyph: dict[str, tuple[int, int]],
 ) -> None:
-    """Install yakumono-only ss09 after merge.
+    """Install yakumono-only ss09 on the merged final font.
 
     font-baker may rename colliding base glyphs in the final font. Rebuild the
     codepoint-keyed optional punctuation behavior against the final cmap so
@@ -1326,7 +1170,6 @@ def _refresh_ss09_feature_after_merge(
     as GPOS ``halt`` and ``vhal`` so Chromium's ``text-spacing-trim`` works in
     horizontal and vertical flows.
     """
-    font = TTFont(final_path)
     ss09_adjustments = _retarget_feature_adjustments(
         font,
         ss09_punctuation_by_codepoint,
@@ -1348,7 +1191,6 @@ def _refresh_ss09_feature_after_merge(
     _install_halt_feature(font, ss09_adjustments)
     if ss09_vertical_adjustments:
         _install_vhal_feature(font, ss09_vertical_adjustments)
-    font.save(final_path)
 
 
 def _apply_tracking(
@@ -1490,14 +1332,6 @@ def _suppress_fonttools_coverage_warnings():
         logger.setLevel(old_level)
 
 
-def _normalize_layout_coverage_order(font_path: str) -> None:
-    """Rewrite a TTF so GSUB/GPOS coverage tables follow final glyph order."""
-    with _suppress_fonttools_coverage_warnings():
-        font = TTFont(font_path)
-        reorderGlyphs(font, font.getGlyphOrder())
-        font.save(font_path)
-
-
 def _validate_font_integrity(font: TTFont, label: str = "<font>") -> None:
     """Raise if a final TTF has dangling glyph references or stale counts."""
     glyph_order = font.getGlyphOrder()
@@ -1571,12 +1405,16 @@ def _validate_final_ttf(font_path: str) -> None:
 # Pipeline
 # ---------------------------------------------------------------------------
 
-def _intermediate_paths(family: dict, weight_name: str) -> tuple[str, str]:
-    """Return family-scoped intermediates so parallel builds never collide."""
-    prefix = family["folderPrefix"]
-    return (
-        os.path.join(INTERMEDIATE, f"{prefix}-{weight_name}-NotoSansJP-Inst.ttf"),
-        os.path.join(INTERMEDIATE, f"{prefix}-{weight_name}-NotoSansJP-Prop.ttf"),
+def _noto_instance_path(weight_name: str) -> str:
+    """Return the static Noto bake shared by every family at one weight."""
+    return os.path.join(INTERMEDIATE, f"NotoSansJP-{weight_name}-Inst.ttf")
+
+
+def _proportional_path(family: dict, weight_name: str) -> str:
+    """Return the family-scoped proportional Noto intermediate."""
+    return os.path.join(
+        INTERMEDIATE,
+        f"{family['folderPrefix']}-{weight_name}-NotoSansJP-Prop.ttf",
     )
 
 
@@ -1586,51 +1424,21 @@ def _final_ttf_path(family: dict, weight_name: str) -> str:
     return os.path.join(DIST_TTF, family_name, f"{file_name}.ttf")
 
 
-def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -> dict:
-    """Build a single weight of a Gen Interface JP family.
+def _bake_noto_instance(weight_num: int, weight_name: str, noto_wght: int) -> str:
+    """Bake Noto Sans JP variable → static TTF (font-baker, base-only).
 
-    Pipeline:
-
-    1. **Bake** Noto variable → static TTF at the chosen wght axis location,
-       passed through font-baker with ``metadataMode: inheritBase`` and
-       ``output.upm = 2048`` so the Noto identity records survive into the inst.
-    2. **Proportionalise** the inst — read baseline palt from Noto Variable,
-       bake those adjustments into hmtx except selected horizontal ss09
-       yakumono, apply tracking,
-       apply per-glyph sidebearing tweaks from ``family["glyphSpacing"]``,
-       strip extreme bbox glyphs, optionally apply x-scale.
-    3. **Merge** the proportional Noto with the matching Inter master via
-       font-baker. ``subFont.excludeCodepoints`` keeps CJK-conventional
-       symbols (※, ◯, ①, Ⓐ, …) on the Noto outline, and font-baker's
-       glyph-name collision detection rescues cases like Inter's U+0298
-       sharing the ``uni25CE`` glyph name with Noto's ◎. Output identity
-       is rewritten to "Gen Interface JP", Inter's vertical metrics drive
-       the merged hhea (``metricsSource: "sub"``), and our manufacturer /
-       URL plus the project version get stamped into the final name/head
-       metadata.
-    4. **Patch** the merged TTF with zero-width default-ignorable glyphs
-       for ZWNJ/ZWJ and VS1-16 so literal composers do not show tofu after
-       emoji-capable text symbols.
-    5. **Validate** the final TTF's glyph order, cmap targets, composite
-       components, and layout table compilation after all post-merge rewrites.
+    The bake depends only on the weight, so both families share it.
+    `metadataMode: inheritBase` keeps Noto's name/OS2 records intact so
+    designer/OFL/version metadata survives into the inst TTF (no manual
+    save/restore needed). Only `weight` is overridden to stamp the static
+    instance — family/italic/width inherit from the Noto base. `output.upm`
+    moves every Noto glyph, including unmapped vertical alternates, onto
+    Inter's 2048 UPM grid before the in-house spacing passes run.
     """
     os.makedirs(INTERMEDIATE, exist_ok=True)
-
-    inter_path = _inter_source_path(family, weight_num, weight_name)
-    if not os.path.isfile(inter_path):
-        raise FileNotFoundError(f"Inter font not found: {inter_path}")
-
-    inst_path, prop_path = _intermediate_paths(family, weight_name)
-
-    # ── Step 1: Bake Noto variable → static (font-baker, base-only) ──
-    # `metadataMode: inheritBase` keeps Noto's name/OS2 records intact so
-    # designer/OFL/version metadata survives into the inst TTF (no manual
-    # save/restore needed). Only `weight` is overridden to stamp the static
-    # instance — family/italic/width inherit from the Noto base. `output.upm`
-    # moves every Noto glyph, including unmapped vertical alternates, onto
-    # Inter's 2048 UPM grid before the in-house spacing passes run.
-    print(f"    [1/3] Baking Noto Sans JP (wght={noto_wght})...")
-    bake_config = {
+    inst_path = _noto_instance_path(weight_name)
+    print(f"    [1/3] Baking Noto Sans JP {weight_name} (wght={noto_wght})...")
+    merge_fonts({
         "baseFont": {
             "path": NOTO_VARIABLE,
             "scale": 1.0,
@@ -1647,41 +1455,56 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
                 "font": inst_path,
             },
         },
-    }
-    merge_fonts(bake_config)
+    })
+    return inst_path
+
+
+def build_family(family: dict, weight_num: int, weight_name: str, inst_path: str) -> str:
+    """Build one family at one weight from a baked Noto instance.
+
+    Pipeline (after the shared Noto bake):
+
+    2. **Proportionalise** the inst — read baseline palt from Noto Variable,
+       bake those adjustments into hmtx except selected horizontal ss09
+       yakumono, apply tracking, apply per-glyph sidebearing tweaks from
+       ``family["glyphSpacing"]``, strip extreme bbox glyphs, and apply
+       vertical tracking.
+    3. **Merge** the proportional Noto with the matching Inter master via
+       font-baker. ``subFont.excludeCodepoints`` keeps CJK-conventional
+       symbols (※, ◯, ①, Ⓐ, …) on the Noto outline, and font-baker's
+       glyph-name collision detection rescues cases like Inter's U+0298
+       sharing the ``uni25CE`` glyph name with Noto's ◎. Output identity
+       is rewritten to "Gen Interface JP", Inter's vertical metrics drive
+       the merged hhea (``metricsSource: "sub"``), and our manufacturer /
+       URL plus the project version get stamped into the final name/head
+       metadata.
+    4. **Patch** the merged TTF in memory: re-sort layout coverage by the
+       final glyph IDs, rescale Japanese vmtx, install ss09 / halt / vhal,
+       and add zero-width default-ignorable glyphs for ZWNJ/ZWJ and VS1-16
+       so literal composers do not show tofu after emoji-capable symbols.
+       The font is saved once after all patches.
+    5. **Validate** the saved TTF's glyph order, cmap targets, composite
+       components, and layout table compilation.
+    """
+    inter_path = _inter_source_path(family, weight_num, weight_name)
+    if not os.path.isfile(inter_path):
+        raise FileNotFoundError(f"Inter font not found: {inter_path}")
+    prop_path = _proportional_path(family, weight_name)
 
     # ── Step 2: Convert to proportional + apply tracking ──
     font = TTFont(inst_path)
     _assert_target_upm(font, inst_path)
     font_upm = font["head"].unitsPerEm
 
-    tracking_design = family["tracking"]
-    tracking_kana_design = family["trackingKana"]
-    tracking = _scale_design_unit(tracking_design, font_upm)
-    tracking_kana = (
-        None
-        if tracking_kana_design is None
-        else _scale_design_unit(tracking_kana_design, font_upm)
+    tracking = _scale_design_unit(family["tracking"], font_upm)
+    tracking_kana = _scale_design_unit(family["trackingKana"], font_upm)
+    vertical_tracking = _scale_design_unit(family["verticalTracking"], font_upm)
+    ss09_punctuation_chars = family["runtimePalt"]
+    print(
+        f"    [2/3] Proportional (palt) + tracking +{family['tracking']} "
+        f"(kana/punct +{family['trackingKana']}, "
+        f"vertical JP +{family['verticalTracking']}) at {SOURCE_UPM} UPM..."
     )
-    vertical_tracking_design = family.get("verticalTracking", 0)
-    vertical_tracking = _scale_design_unit(vertical_tracking_design, font_upm)
-    tracking_ignore = family.get("trackingIgnore")
-    ss09_punctuation_chars = family.get("runtimePalt")
-
-    desc = f"tracking +{tracking}"
-    if font_upm != SOURCE_UPM:
-        desc += f" ({tracking_design} at {SOURCE_UPM} UPM)"
-    if tracking_kana is not None:
-        kana_desc = f"kana/punct +{tracking_kana}"
-        if font_upm != SOURCE_UPM:
-            kana_desc += f" ({tracking_kana_design} at {SOURCE_UPM} UPM)"
-        desc += f" ({kana_desc})"
-    if vertical_tracking:
-        vertical_desc = f"vertical JP +{vertical_tracking}"
-        if font_upm != SOURCE_UPM:
-            vertical_desc += f" ({vertical_tracking_design} at {SOURCE_UPM} UPM)"
-        desc += f" ({vertical_desc})"
-    print(f"    [2/3] Proportional (palt) + {desc}...")
 
     # Split U+30FB from U+2027 before metrics work. Noto maps both to
     # ``uni2027``, but U+30FB is one of the yakumono glyphs that should
@@ -1692,7 +1515,7 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
     # Use Noto's baseline palt for every weight. Thin through SemiBold carry
     # identical vendor palt values, while Bold / ExtraBold switch to a heavier
     # FeatureVariation set that looks too tight for this UI family.
-    palt_data = _scale_design_adjustments(dict(_get_baseline_palt()), font_upm)
+    palt_data = _scale_design_adjustments(_get_baseline_palt(), font_upm)
     if split_source in palt_data:
         palt_data["uni30FB"] = palt_data[split_source]
     ss09_punctuation_by_codepoint = _runtime_palt_residuals_by_codepoint(
@@ -1702,7 +1525,7 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
             palt_data,
         )
     )
-    vhal_data = _scale_design_adjustments(dict(_get_baseline_vhal()), font_upm)
+    vhal_data = _scale_design_adjustments(_get_baseline_vhal(), font_upm)
     # U+30FB was split from Noto's shared uni2027 glyph above; preserve the
     # source glyph's vertical half-width adjustment on the new uni30FB glyph.
     if split_source in vhal_data:
@@ -1726,14 +1549,13 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
     make_proportional(
         font,
         palt_override=palt_data,
-        runtime_palt=ss09_punctuation_glyphs,
-        runtime_palt_base_scale=RUNTIME_PALT_BASE_SCALE,
-        install_runtime_palt=False,
+        reduced_palt=ss09_punctuation_glyphs,
+        reduced_palt_scale=RUNTIME_PALT_BASE_SCALE,
     )
-    _apply_tracking(font, tracking, tracking_kana, tracking_ignore)
+    _apply_tracking(font, tracking, tracking_kana, family["trackingIgnore"])
     spacing_adjusted = _apply_glyph_spacing(
         font,
-        _scale_glyph_spacing(family.get("glyphSpacing"), font_upm),
+        _scale_glyph_spacing(family["glyphSpacing"], font_upm),
     )
     if spacing_adjusted:
         print(f"          Per-glyph spacing: {spacing_adjusted} glyph(s) adjusted")
@@ -1741,13 +1563,11 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
     vertical_tracking_adjusted = _apply_vertical_tracking(font, vertical_tracking)
     if vertical_tracking_adjusted:
         print(f"          Vertical tracking: {vertical_tracking_adjusted} glyph(s) adjusted")
-    x_scale = family.get("xScale", 1.0)
-    if x_scale != 1.0:
-        _apply_x_scale(font, x_scale)
+    # Saving recalculates glyph bounds in place, so the in-memory font stays
+    # equivalent to the file and doubles as the vmtx source after the merge.
     font.save(prop_path)
 
     # ── Step 3: Merge Inter + proportional Noto ──
-    family_name = family["familyName"]
     final_path = _final_ttf_path(family, weight_name)
     print(f"    [3/3] Merging {family['interPrefix']} + proportional Noto...")
     baseline_offset = _scale_design_unit(BASELINE_OFFSET, TARGET_UPM)
@@ -1766,7 +1586,7 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
             "axes": [],
         },
         "output": _final_output_metadata(
-            family_name,
+            family["familyName"],
             weight_num,
             _project_version(),
         ),
@@ -1776,41 +1596,67 @@ def build_one(family: dict, weight_num: int, weight_name: str, noto_wght: int) -
             },
         },
     }
+
+    # ── Step 4: Patch the merged font in memory, then save once ──
     with _suppress_fonttools_coverage_warnings():
         merge_fonts(merge_config)
-    final_font = TTFont(final_path)
-    _assert_target_upm(final_font, final_path)
-    final_font.close()
-    _normalize_layout_coverage_order(final_path)
-    vertical_body_adjusted = _scale_vertical_body_metrics_after_merge(
-        final_path,
-        prop_path,
-        SCALE,
-        baseline_offset,
-    )
-    if vertical_body_adjusted:
-        print(f"          Vertical body metrics: {vertical_body_adjusted} glyph(s) adjusted")
-    _refresh_ss09_feature_after_merge(
-        final_path,
-        _scale_feature_adjustments(ss09_punctuation_by_codepoint, SCALE),
-        _scale_feature_adjustments(ss09_vertical_by_codepoint, SCALE),
-        _scale_feature_adjustments(ss09_vertical_by_glyph, SCALE),
-    )
-    default_ignorables_added = _add_default_ignorable_glyphs_to_ttf(final_path)
-    if default_ignorables_added:
-        print(
-            "          Default-ignorable glyphs: "
-            f"{default_ignorables_added} glyph(s) added"
-        )
+        final_font = TTFont(final_path)
+        try:
+            _assert_target_upm(final_font, final_path)
+            # font-baker can carry layout coverage in pre-merge glyph order;
+            # re-sort it by the final glyph IDs before editing layout tables.
+            reorderGlyphs(final_font, final_font.getGlyphOrder())
+            vertical_body_adjusted = _scale_vertical_body_metrics(
+                final_font,
+                font,
+                SCALE,
+                baseline_offset,
+            )
+            if vertical_body_adjusted:
+                print(f"          Vertical body metrics: {vertical_body_adjusted} glyph(s) adjusted")
+            _install_final_ss09_features(
+                final_font,
+                _scale_feature_adjustments(ss09_punctuation_by_codepoint, SCALE),
+                _scale_feature_adjustments(ss09_vertical_by_codepoint, SCALE),
+                _scale_feature_adjustments(ss09_vertical_by_glyph, SCALE),
+            )
+            default_ignorables_added = _add_default_ignorable_glyphs(final_font)
+            if default_ignorables_added:
+                print(
+                    "          Default-ignorable glyphs: "
+                    f"{default_ignorables_added} glyph(s) added"
+                )
+            final_font.save(final_path)
+        finally:
+            final_font.close()
+            font.close()
+
+    # ── Step 5: Validate what actually landed on disk ──
     _validate_final_ttf(final_path)
-    return {
-        "fontPath": final_path,
-    }
+    return final_path
+
+
+def build_weight(
+    family_keys: tuple[str, ...],
+    weight_num: int,
+    weight_name: str,
+    noto_wght: int,
+) -> list[str]:
+    """Bake Noto once for a weight, then build each requested family from it."""
+    inst_path = _bake_noto_instance(weight_num, weight_name, noto_wght)
+    return [
+        build_family(FAMILIES[family_key], weight_num, weight_name, inst_path)
+        for family_key in family_keys
+    ]
 
 
 # ---------------------------------------------------------------------------
 # CLI entrypoint
 # ---------------------------------------------------------------------------
+
+# (family keys, usWeightClass, weight name, Noto wght axis value)
+BuildTask = tuple[tuple[str, ...], int, str, int]
+
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -1830,7 +1676,10 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         "--jobs",
         type=int,
         default=int(os.environ.get("FONT_BUILD_JOBS", "1")),
-        help="Number of parallel family/weight jobs. Use 16 for the full TTF matrix.",
+        help=(
+            "Number of parallel weight jobs. Each job bakes Noto once and "
+            "builds every selected family; use 8 for the full matrix."
+        ),
     )
     args = parser.parse_args(argv)
     if args.jobs < 1:
@@ -1864,134 +1713,28 @@ def _select_build_matrix(selection: list[str]) -> tuple[list[str], list[tuple[in
     return families_to_build, weights_to_build
 
 
-def _build_task(task: tuple[str, int, str, int, int, int]) -> dict:
-    family_key, weight_num, weight_name, noto_wght, index, total = task
-    family = FAMILIES[family_key]
-    family_name = family["familyName"]
-    print(f"\n[{index}/{total}] {family_name} {weight_name} ({weight_num})...")
-    manifest = build_one(family, weight_num, weight_name, noto_wght)
-    return {
-        **manifest,
-        "familyKey": family_key,
-        "familyName": family_name,
-        "weightNum": weight_num,
-        "weightName": weight_name,
-        "index": index,
-        "total": total,
-    }
+def _task_label(task: BuildTask) -> str:
+    family_keys, weight_num, weight_name, _noto_wght = task
+    return f"{weight_name} ({weight_num}) [{', '.join(family_keys)}]"
 
 
-def _task_manifest(task: tuple[str, int, str, int, int, int]) -> dict:
-    family_key, weight_num, weight_name, _noto_wght, index, total = task
-    family = FAMILIES[family_key]
-    return {
-        "fontPath": _final_ttf_path(family, weight_name),
-        "familyKey": family_key,
-        "familyName": family["familyName"],
-        "weightNum": weight_num,
-        "weightName": weight_name,
-        "index": index,
-        "total": total,
-    }
+def _task_outputs(task: BuildTask) -> list[str]:
+    family_keys, _weight_num, weight_name, _noto_wght = task
+    return [_final_ttf_path(FAMILIES[key], weight_name) for key in family_keys]
 
 
-def _child_pythonpath() -> str:
-    src_path = os.path.join(ROOT, "src")
-    existing = os.environ.get("PYTHONPATH")
-    if existing:
-        paths = existing.split(os.pathsep)
-        if src_path in paths:
-            return existing
-        return os.pathsep.join([src_path, existing])
-    return src_path
-
-
-def _parallel_task_command(task: tuple[str, int, str, int, int, int]) -> list[str]:
-    family_key, _weight_num, weight_name, _noto_wght, _index, _total = task
+def _parallel_task_command(task: BuildTask) -> list[str]:
+    family_keys, _weight_num, weight_name, _noto_wght = task
+    selection = family_keys[0] if len(family_keys) == 1 else "all"
     return [
         sys.executable,
         "-m",
         "font.build",
         "--jobs",
         "1",
-        family_key,
+        selection,
         weight_name,
     ]
-
-
-def _run_parallel_build_tasks(
-    tasks: list[tuple[str, int, str, int, int, int]],
-    jobs: int,
-) -> list[dict]:
-    worker_count = min(jobs, len(tasks))
-    print(
-        f"\nRunning {len(tasks)} TTF build job(s) with {worker_count} worker(s).",
-        flush=True,
-    )
-
-    env = os.environ.copy()
-    env["PYTHONPATH"] = _child_pythonpath()
-    pending = list(tasks)
-    active: list[tuple[tuple[str, int, str, int, int, int], subprocess.Popen]] = []
-    results: list[dict] = []
-
-    try:
-        while pending or active:
-            while pending and len(active) < worker_count:
-                task = pending.pop(0)
-                manifest = _task_manifest(task)
-                print(
-                    f"  -> starting [{manifest['index']}/{manifest['total']}] "
-                    f"{manifest['familyName']} {manifest['weightName']}",
-                    flush=True,
-                )
-                process = subprocess.Popen(
-                    _parallel_task_command(task),
-                    cwd=ROOT,
-                    env=env,
-                )
-                active.append((task, process))
-
-            for task, process in list(active):
-                returncode = process.poll()
-                if returncode is None:
-                    continue
-
-                active.remove((task, process))
-                command = _parallel_task_command(task)
-                if returncode != 0:
-                    for _active_task, active_process in active:
-                        active_process.terminate()
-                    for _active_task, active_process in active:
-                        active_process.wait()
-                    raise subprocess.CalledProcessError(returncode, command)
-
-                manifest = _task_manifest(task)
-                results.append(manifest)
-                print(
-                    f"  -> done [{manifest['index']}/{manifest['total']}] "
-                    f"{manifest['fontPath']}",
-                    flush=True,
-                )
-
-            if pending or active:
-                time.sleep(0.5)
-    except KeyboardInterrupt:
-        for _task, process in active:
-            process.terminate()
-        raise
-
-    return sorted(results, key=lambda manifest: manifest["index"])
-
-
-def _run_build_tasks(
-    tasks: list[tuple[str, int, str, int, int, int]],
-    jobs: int,
-) -> list[dict]:
-    if jobs == 1 or len(tasks) <= 1:
-        return [_build_task(task) for task in tasks]
-
-    return _run_parallel_build_tasks(tasks, jobs)
 
 
 def main():
@@ -2000,7 +1743,7 @@ def main():
     Usage::
 
         python -m font.build                       # everything
-        python -m font.build --jobs 16             # everything in parallel
+        python -m font.build --jobs 8              # everything in parallel
         python -m font.build normal                # all weights of one family
         python -m font.build normal Regular Bold   # a slice
         python -m font.build all 400 700           # by weight, both families
@@ -2018,32 +1761,27 @@ def main():
         print(exc)
         sys.exit(1)
 
-    tasks: list[tuple[str, int, str, int, int, int]] = []
-    total_tasks = len(families_to_build) * len(weights_to_build)
-    index = 1
-    for family_key in families_to_build:
-        for weight_num, weight_name, noto_wght in weights_to_build:
-            tasks.append((family_key, weight_num, weight_name, noto_wght, index, total_tasks))
-            index += 1
+    tasks: list[BuildTask] = [
+        (tuple(families_to_build), weight_num, weight_name, noto_wght)
+        for weight_num, weight_name, noto_wght in weights_to_build
+    ]
 
-    for family_key in families_to_build:
-        family = FAMILIES[family_key]
-        family_name = family["familyName"]
-        print(f"\n{'='*60}")
-        print(f"  {family_name}  (tracking +{family['tracking']})")
-        print(f"{'='*60}")
+    if cli_args.jobs == 1 or len(tasks) == 1:
+        for index, task in enumerate(tasks, 1):
+            print(f"\n[{index}/{len(tasks)}] {_task_label(task)}...")
+            for path in build_weight(*task):
+                print(f"  -> {path}")
+    else:
+        jobs = min(cli_args.jobs, len(tasks))
+        print(f"\nRunning {len(tasks)} weight job(s) with {jobs} worker(s).", flush=True)
+        run_parallel(
+            [_parallel_task_command(task) for task in tasks],
+            jobs,
+            [_task_label(task) for task in tasks],
+        )
 
-    manifests = _run_build_tasks(tasks, cli_args.jobs)
-    if cli_args.jobs == 1:
-        for manifest in manifests:
-            print(f"  -> {manifest['fontPath']}")
-
-    for family_key in families_to_build:
-        total = sum(1 for manifest in manifests if manifest["familyKey"] == family_key)
-        family_name = FAMILIES[family_key]["familyName"]
-        print(f"\n  Done. {total} weight(s) of {family_name}")
-
-    print(f"\nAll done. Output in {DIST_TTF}")
+    outputs = [path for task in tasks for path in _task_outputs(task)]
+    print(f"\nAll done. {len(outputs)} TTF(s) in {DIST_TTF}")
 
 
 if __name__ == "__main__":

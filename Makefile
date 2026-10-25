@@ -9,8 +9,9 @@ endif
 PYTHONPATH := src
 PY := PYTHONPATH=$(PYTHONPATH) $(PYTHON)
 
-WEBFONT_JOBS ?= 8
-FONT_JOBS ?= 16
+# One font job per weight (each bakes Noto once for both families).
+FONT_JOBS ?= 8
+WEBFONT_JOBS ?= $(shell getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
 NPM_PACKAGE_DIR := dist/release/npm
 NPM_PUBLISH_FLAGS ?= --access public
 NPM_CACHE ?= $(CURDIR)/.npm-cache
@@ -51,9 +52,11 @@ webfont: font
 # generates the full WOFF2 from the Regular TTF on demand into
 # dist/webfont/GenInterfaceJP-Regular/, then drives benchmark.mjs.
 # Independent of `make webfont` (which is the --all multi-weight path
-# whose manifest shape differs from what benchmark.mjs reads).
-webfont-benchmark: font
-	$(PY) -m webfont.build --clean --strategy google-japanese
+# whose manifest shape differs from what benchmark.mjs reads). Only the
+# normal Regular TTF is needed, so the other 15 TTFs are not rebuilt.
+webfont-benchmark:
+	$(PY) -m font.build normal Regular
+	$(PY) -m webfont.build --clean --strategy google-japanese --jobs $(WEBFONT_JOBS)
 	$(NODE) src/webfont/benchmark.mjs
 
 

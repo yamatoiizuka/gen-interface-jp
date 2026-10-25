@@ -17,20 +17,24 @@ needed to keep referenced glyphs reachable inside each WOFF2.
 from __future__ import annotations
 
 import argparse
-import concurrent.futures
 import datetime as _dt
 import gzip
 import json
 import logging
 import math
 import os
+import re
 import shutil
+import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+import brotli
 from fontTools import subset
 from fontTools.ttLib import TTFont
+from parallel import deferred_signals, run_parallel
 
 logging.getLogger("fontTools.ttLib.tables.otTables").setLevel(logging.ERROR)
 
@@ -220,8 +224,6 @@ def parse_slicing_strategy(path: Path) -> list[set[int]]:
     Only ``codepoints:`` lines are interpreted, so comment text can contain
     braces like ``# } RIGHT CURLY BRACKET``.
     """
-    import re
-
     text = path.read_text(encoding="utf-8")
     parsed: list[set[int]] = []
     current: set[int] | None = None
@@ -355,41 +357,44 @@ def build_woff2_subset(src_ttf: Path, out_path: Path, codepoints: Iterable[int])
     subset.save_font(font, str(out_path), options)
 
 
-def _subset_worker(task: tuple[str, str, tuple[int, ...]]) -> tuple[str, int]:
-    src, out, codepoints = task
-    out_path = Path(out)
-    build_woff2_subset(Path(src), out_path, codepoints)
-    return out, out_path.stat().st_size
+SubsetTask = tuple[str, str, tuple[int, ...]]  # (source TTF, output WOFF2, codepoints)
 
 
-def _run_subset_tasks(tasks: list[tuple[str, str, tuple[int, ...]]], jobs: int, out_dir: Path) -> dict[str, int]:
-    """Build WOFF2 subsets, using threads when multiple workers are requested.
+def _run_subset_worker(tasks_path: Path) -> None:
+    """Child-process entry point: build every subset listed in *tasks_path*."""
+    tasks = json.loads(tasks_path.read_text(encoding="utf-8"))
+    for src, out, codepoints in tasks:
+        build_woff2_subset(Path(src), Path(out), codepoints)
 
-    Issue #33: ProcessPoolExecutor hangs on macOS/pyenv spawn when many
-    fontTools subset tasks are submitted. Threads avoid spawn/pickle entirely,
-    while fontTools + Brotli still benefit from native-code parallelism.
+
+def _run_subset_tasks(tasks: list[SubsetTask], jobs: int, out_dir: Path) -> dict[str, int]:
+    """Build WOFF2 subsets and return ``{output path: bytes}``.
+
+    fontTools subsetting is pure Python, so threads serialize on the GIL.
+    With multiple jobs the tasks are sharded round-robin into child
+    interpreters (see ``parallel``), which keeps every core busy.
     """
-    total_tasks = len(tasks)
-    completed = 0
-    jobs = max(1, jobs)
-    results: dict[str, int] = {}
-    print(f"Building {total_tasks} subset WOFF2 files with {jobs} worker(s)...", flush=True)
+    jobs = max(1, min(jobs, len(tasks)))
+    print(f"Building {len(tasks)} subset WOFF2 files with {jobs} worker(s)...", flush=True)
     if jobs == 1:
-        for task in tasks:
-            out, size = _subset_worker(task)
-            results[out] = size
-            completed += 1
-            print(f"[{completed:04d}/{total_tasks:04d}] {Path(out).relative_to(out_dir)} {size / 1024:.1f} KB", flush=True)
-        return results
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as executor:
-        futures = [executor.submit(_subset_worker, task) for task in tasks]
-        for future in concurrent.futures.as_completed(futures):
-            out, size = future.result()
-            results[out] = size
-            completed += 1
-            print(f"[{completed:04d}/{total_tasks:04d}] {Path(out).relative_to(out_dir)} {size / 1024:.1f} KB", flush=True)
-    return results
+        for index, (src, out, codepoints) in enumerate(tasks, 1):
+            build_woff2_subset(Path(src), Path(out), codepoints)
+            print(f"[{index:04d}/{len(tasks):04d}] {Path(out).relative_to(out_dir)}", flush=True)
+    else:
+        # Defer SIGINT/SIGTERM across the whole temp-dir lifetime so a cancel
+        # during shard serialization or cleanup still removes the task files.
+        with deferred_signals(), tempfile.TemporaryDirectory(prefix="webfont-tasks-") as tmp:
+            commands = []
+            for shard in range(jobs):
+                tasks_path = Path(tmp) / f"{shard:02d}.json"
+                tasks_path.write_text(json.dumps(tasks[shard::jobs]), encoding="utf-8")
+                commands.append([sys.executable, "-m", "webfont.build", "--subset-worker", str(tasks_path)])
+            run_parallel(
+                commands,
+                jobs,
+                [f"subset shard {shard + 1}/{jobs}" for shard in range(jobs)],
+            )
+    return {out: Path(out).stat().st_size for _src, out, _codepoints in tasks}
 
 
 def build_full_woff2(src_ttf: Path, out_path: Path) -> None:
@@ -446,14 +451,6 @@ def _source_font_path(family: WebFontFamily, weight_name: str) -> Path:
     return base_dir / family.dist_folder / f"{family.file_prefix}-{weight_name}.ttf"
 
 
-def _brotli_size(data: bytes) -> int | None:
-    try:
-        import brotli
-    except ImportError:
-        return None
-    return len(brotli.compress(data, quality=11))
-
-
 def _verify_matching_cmaps(source_paths: list[Path]) -> set[int]:
     base_path = source_paths[0]
     base_cmap = set(TTFont(base_path).getBestCmap().keys())
@@ -480,7 +477,7 @@ def css_size_info(path: Path) -> dict:
         "path": path.name,
         "bytes": len(data),
         "gzipBytes": len(gzip.compress(data, compresslevel=9)),
-        "brotliBytes": _brotli_size(data),
+        "brotliBytes": len(brotli.compress(data, quality=11)),
     }
 
 
@@ -536,7 +533,7 @@ def build_all(args: argparse.Namespace) -> dict:
     for index, item in enumerate(plan):
         write_nam(out_dir / "nam" / f"{index:03d}.nam", item.codepoints, item.note)
 
-    tasks: list[tuple[str, str, tuple[int, ...]]] = []
+    tasks: list[SubsetTask] = []
     file_entries: dict[str, dict] = {}
     face_entries: list[dict] = []
 
@@ -632,9 +629,11 @@ def build_all(args: argparse.Namespace) -> dict:
     print(f"\nCSS: {out_dir / all_css['path']}")
     print(f"Manifest: {out_dir / 'manifest.json'}")
     print(f"Subset WOFF2: {subset_bytes / 1024 / 1024:.2f} MB")
-    print(f"all.css: {all_css['bytes'] / 1024:.1f} KB raw, {all_css['gzipBytes'] / 1024:.1f} KB gzip")
-    if all_css["brotliBytes"] is not None:
-        print(f"all.css: {all_css['brotliBytes'] / 1024:.1f} KB brotli")
+    print(
+        f"all.css: {all_css['bytes'] / 1024:.1f} KB raw, "
+        f"{all_css['gzipBytes'] / 1024:.1f} KB gzip, "
+        f"{all_css['brotliBytes'] / 1024:.1f} KB brotli"
+    )
     return manifest
 
 
@@ -667,28 +666,24 @@ def build(args: argparse.Namespace) -> dict:
         "bytes": full_out.stat().st_size,
     }
 
-    subset_specs: list[tuple[int, WebFontSubset, Path]] = []
-    tasks: list[tuple[str, str, tuple[int, ...]]] = []
-    for index, item in enumerate(plan, 1):
-        filename = f"GenInterfaceJP-Regular-{item.name}.woff2"
-        out_path = out_dir / "subsets" / filename
+    subset_specs: list[tuple[WebFontSubset, Path]] = []
+    tasks: list[SubsetTask] = []
+    for item in plan:
+        out_path = out_dir / "subsets" / f"GenInterfaceJP-Regular-{item.name}.woff2"
         write_nam(out_dir / "nam" / f"{item.name}.nam", item.codepoints, item.note)
-        subset_specs.append((index, item, out_path))
+        subset_specs.append((item, out_path))
         tasks.append((str(src_ttf), str(out_path), item.codepoints))
 
     subset_sizes = _run_subset_tasks(tasks, args.jobs, out_dir)
 
     subset_entries: list[dict] = []
-    for index, item, out_path in subset_specs:
-        size = out_path.stat().st_size
-        if subset_sizes[str(out_path)] != size:
-            raise RuntimeError(f"Unexpected subset size mismatch for {out_path}")
+    for item, out_path in subset_specs:
         subset_entries.append(
             {
                 "name": item.name,
                 "path": str(out_path.relative_to(out_dir)),
                 "nam": f"nam/{item.name}.nam",
-                "bytes": size,
+                "bytes": subset_sizes[str(out_path)],
                 "codepoints": len(item.codepoints),
                 "unicodeRange": format_unicode_range(item.codepoints),
                 "note": item.note,
@@ -704,7 +699,7 @@ def build(args: argparse.Namespace) -> dict:
         "fontDisplay": DISPLAY,
         "generatedAt": _dt.datetime.now(tz=_dt.timezone.utc).isoformat(),
         "source": {
-            "ttf": str(src_ttf.relative_to(ROOT)) if src_ttf.is_relative_to(ROOT) else str(src_ttf),
+            "ttf": _relative_to_root(src_ttf),
             "strategy": args.strategy,
         },
         "css": {
@@ -724,11 +719,7 @@ def build(args: argparse.Namespace) -> dict:
         },
     }
     if args.strategy == "google-japanese":
-        manifest["source"]["googleJapaneseSlice"] = (
-            str(args.google_japanese_slice.resolve().relative_to(ROOT))
-            if args.google_japanese_slice.resolve().is_relative_to(ROOT)
-            else str(args.google_japanese_slice.resolve())
-        )
+        manifest["source"]["googleJapaneseSlice"] = _relative_to_root(args.google_japanese_slice)
     (out_dir / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
@@ -745,19 +736,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--all", action="store_true", help="Build Text + Display subset WOFF2 for all weights and CSS entrypoints")
     parser.add_argument("--ttf", type=Path, default=DEFAULT_TTF, help="Source Gen Interface JP Regular TTF")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUT, help="Output directory")
-    parser.add_argument("--jobs", type=int, default=max(1, min(4, os.cpu_count() or 1)), help="Parallel workers for subset generation")
+    parser.add_argument("--jobs", type=int, default=os.cpu_count() or 1, help="Parallel worker processes for subset generation")
     parser.add_argument("--strategy", choices=["google-japanese", "jis-row"], default="google-japanese", help="Subset partitioning strategy")
     parser.add_argument("--google-japanese-slice", type=Path, default=DEFAULT_GOOGLE_JAPANESE_SLICE, help="googlefonts/nam-files slices/japanese_default.txt")
     parser.add_argument("--no-remaining", action="store_true", help="Do not add extra subsets for cmap codepoints outside the selected strategy")
     parser.add_argument("--remaining-slices", type=int, default=8, help="Number of extra subsets for codepoints outside the selected strategy")
     parser.add_argument("--extra-han-slices", type=int, default=24, help="Slices for CJK codepoints outside JIS X 0208")
     parser.add_argument("--clean", action="store_true", help="Remove the output directory before building")
+    parser.add_argument("--subset-worker", type=Path, help=argparse.SUPPRESS)
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    if args.all:
+    if args.subset_worker:
+        _run_subset_worker(args.subset_worker)
+    elif args.all:
         if args.output == DEFAULT_OUT:
             args.output = DEFAULT_ALL_OUT
         build_all(args)
