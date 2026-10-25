@@ -138,7 +138,9 @@ bakes Noto once and then builds every selected family from that bake. The
 Makefile uses `FONT_JOBS ?= 8`, so `make font` builds the full 2-family ×
 8-weight TTF matrix with one worker per weight. Jobs run as plain child
 interpreters (`src/parallel.py`) rather than `ProcessPoolExecutor`, whose
-spawn path has hung on macOS/pyenv (issue #33). The shared Noto bake is
+spawn path has hung on macOS/pyenv (issue #33). On a child failure, Ctrl-C,
+or SIGTERM to the parent, the runner terminates and reaps every child (with
+a kill fallback after 10 s). The shared Noto bake is
 scoped by weight; proportional intermediates are scoped by family and weight.
 
 ### 2. Subset for the Web (`webfont.build`)
@@ -270,8 +272,8 @@ Four sub-passes, all in-place on the inst:
    side, with a few optical exceptions such as small katakana i (`ィ`),
    small katakana ya (`ャ`), and small hiragana yo (`ょ`). Punctuation,
    including `U+30FB` (・), is intentionally not handled here: it passes
-   through tracking and tightens only when the explicit `ss09` feature is
-   enabled.
+   through tracking, already keeps the 34% palt base baked in by default,
+   and the explicit `ss09` feature applies the remaining tightening.
    The normal family also applies `verticalTracking = 9` design units to
    Japanese vertical-body glyphs on the pre-merge Noto intermediate. This
    updates only `vmtx.advanceHeight`; top sidebearing / vertical origin stay
@@ -602,6 +604,7 @@ Tests live under `tests/`, split by surface:
 |---|---|---|
 | `test_font_build.py` | 113 | CLI build selection, shared-bake / family-scoped intermediate paths, Japanese vertical body scaling/tracking, UPM scaling policy, project-version metadata forwarding, glyph-name parsing, reverse-cmap kana / punctuation classification, CJK classification, GSUB/GPOS walk, baseline palt/vhal policy, bbox strip, default-ignorable zero-width glyph insertion, tracking, final TTF integrity validation, ss09/halt/vhal feature retargeting, final runtime feature scaling, InterVariable edge-instance compatibility |
 | `test_proportional.py` | 30 | palt extraction, cumulative SinglePos lookup reading, glyph translation, GPOS feature removal including vkrn, reduced-palt base fraction, ss09 construction + shaping including vertical no-op coverage |
+| `test_parallel.py` | 2 | Child-interpreter runner: SIGTERM to the parent stops and reaps children; a failing child raises and stops its siblings |
 | `test_release.py` | 2 | GitHub asset URL contract, npm package layout (files glob, license, README, self-host/CDN CSS entrypoints at root) |
 | `test_webfont_build.py` | 42 | Range merge / dedup, unicode-range formatting incl. 5-digit, JIS row mapping, subset plan placement / non-overlap / coverage, strategy parser edge cases |
 
@@ -613,7 +616,7 @@ Tests live under `tests/`, split by surface:
 | `make verify-edge-instances` | Build Thin / ExtraBold and verify InterVariable edge instance + final TTF metadata |
 | `make webfont` | Build unicode-range subsets (depends on `font`) |
 | `make release` | Build GitHub zips + npm + Pages package (depends on `webfont`) |
-| `make webfont-benchmark` | Throttled fetch benchmark of slicing strategy |
+| `make webfont-benchmark` | Throttled fetch benchmark of slicing strategy (builds only normal Regular) |
 | `make npm-pack` | Dry-run npm package inspection |
 | `make npm-publish` | Publish to npm |
 | `make site` | Build the demo site (`site/dist/` doubles as the GitHub Pages artifact) |

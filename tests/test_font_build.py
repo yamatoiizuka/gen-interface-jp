@@ -103,6 +103,14 @@ def _layout_feature_tags(font: TTFont, table_tag: str) -> set[str]:
     return {record.FeatureTag for record in feature_list.FeatureRecord}
 
 
+def _roundtrip(font: TTFont) -> TTFont:
+    """Compile and reload a font, as the build does for its final TTF."""
+    buffer = io.BytesIO()
+    font.save(buffer)
+    buffer.seek(0)
+    return TTFont(buffer)
+
+
 def _add_glyph_copy(font: TTFont, source_glyph: str, new_glyph: str) -> None:
     """Append a simple glyph copy to a synthetic test font."""
     font.setGlyphOrder([*font.getGlyphOrder(), new_glyph])
@@ -1010,9 +1018,10 @@ class TestPaltSymbolPolicy:
         inter_path = _default_inter_static_path(FAMILIES["normal"], "Regular")
         if not Path(inter_path).is_file():
             pytest.skip(f"Inter font not found at {inter_path}")
-        refreshed = TTFont(inter_path)
+        font = TTFont(inter_path)
 
-        _install_final_ss09_features(refreshed, {0x41: (-12, -34)}, {}, {})
+        _install_final_ss09_features(font, {0x41: (-12, -34)}, {}, {})
+        refreshed = _roundtrip(font)
 
         assert "ss09" in _layout_feature_tags(refreshed, "GSUB")
         assert _read_single_pos_feature(
@@ -1027,14 +1036,15 @@ class TestPaltSymbolPolicy:
         inter_path = _default_inter_static_path(FAMILIES["normal"], "Regular")
         if not Path(inter_path).is_file():
             pytest.skip(f"Inter font not found at {inter_path}")
-        refreshed = TTFont(inter_path)
+        font = TTFont(inter_path)
 
         _install_final_ss09_features(
-            refreshed,
+            font,
             {0x41: (-12, -34)},
             {0x41: (0, -50)},
             {},
         )
+        refreshed = _roundtrip(font)
 
         assert _read_single_pos_feature(
             refreshed,
