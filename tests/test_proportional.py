@@ -9,14 +9,13 @@ import io
 
 import pytest
 
-from fontTools.ttLib import newTable
+from fontTools.ttLib import TTFont, newTable
 from fontTools.ttLib.tables import otTables
 
 from font.proportional import (
     PROP_FEATURES,
     _install_ss09_punctuation_feature,
     _read_palt,
-    _read_vpal,
     _remove_prop_features,
     _shift_glyph_x,
     make_proportional,
@@ -31,20 +30,23 @@ def _feature_record(font, table_tag: str, feature_tag: str):
     raise AssertionError(f"{feature_tag} not found in {table_tag}")
 
 
-def _install_synthetic_pairpos_kern(
+def _install_layout_table(
     font,
-    first_glyph: str,
-    second_glyph: str,
-    x_advance: int,
+    table_tag: str,
+    feature_tag: str,
+    lookup_type: int,
+    subtables: list,
+    req_feature_index: int = 0xFFFF,
 ) -> None:
-    gpos = newTable("GPOS")
-    font["GPOS"] = gpos
-    gpos.table = otTables.GPOS()
-    gpos.table.Version = 0x00010000
+    """Replace ``table_tag`` with a DFLT script → one feature → one lookup per subtable."""
+    table = newTable(table_tag)
+    font[table_tag] = table
+    table.table = getattr(otTables, table_tag)()
+    table.table.Version = 0x00010000
 
     langsys = otTables.LangSys()
     langsys.LookupOrder = None
-    langsys.ReqFeatureIndex = 0xFFFF
+    langsys.ReqFeatureIndex = req_feature_index
     langsys.FeatureIndex = [0]
     langsys.FeatureCount = 1
 
@@ -57,10 +59,42 @@ def _install_synthetic_pairpos_kern(
     script_record.ScriptTag = "DFLT"
     script_record.Script = script
 
-    gpos.table.ScriptList = otTables.ScriptList()
-    gpos.table.ScriptList.ScriptRecord = [script_record]
-    gpos.table.ScriptList.ScriptCount = 1
+    table.table.ScriptList = otTables.ScriptList()
+    table.table.ScriptList.ScriptRecord = [script_record]
+    table.table.ScriptList.ScriptCount = 1
 
+    lookups = []
+    for subtable in subtables:
+        lookup = otTables.Lookup()
+        lookup.LookupType = lookup_type
+        lookup.LookupFlag = 0
+        lookup.SubTable = [subtable]
+        lookup.SubTableCount = 1
+        lookups.append(lookup)
+    table.table.LookupList = otTables.LookupList()
+    table.table.LookupList.Lookup = lookups
+    table.table.LookupList.LookupCount = len(lookups)
+
+    feature = otTables.Feature()
+    feature.FeatureParams = None
+    feature.LookupListIndex = list(range(len(lookups)))
+    feature.LookupCount = len(lookups)
+
+    feature_record = otTables.FeatureRecord()
+    feature_record.FeatureTag = feature_tag
+    feature_record.Feature = feature
+
+    table.table.FeatureList = otTables.FeatureList()
+    table.table.FeatureList.FeatureRecord = [feature_record]
+    table.table.FeatureList.FeatureCount = 1
+
+
+def _install_synthetic_pairpos_kern(
+    font,
+    first_glyph: str,
+    second_glyph: str,
+    x_advance: int,
+) -> None:
     value = otTables.ValueRecord()
     value.XAdvance = x_advance
 
@@ -73,117 +107,41 @@ def _install_synthetic_pairpos_kern(
     pairset.PairValueRecord = [pair_record]
     pairset.PairValueCount = 1
 
-    coverage = otTables.Coverage()
-    coverage.glyphs = [first_glyph]
-
     subtable = otTables.PairPos()
     subtable.Format = 1
-    subtable.Coverage = coverage
+    subtable.Coverage = otTables.Coverage()
+    subtable.Coverage.glyphs = [first_glyph]
     subtable.ValueFormat1 = 0x0004
     subtable.ValueFormat2 = 0
     subtable.PairSet = [pairset]
     subtable.PairSetCount = 1
 
-    lookup = otTables.Lookup()
-    lookup.LookupType = 2
-    lookup.LookupFlag = 0
-    lookup.SubTable = [subtable]
-    lookup.SubTableCount = 1
-
-    gpos.table.LookupList = otTables.LookupList()
-    gpos.table.LookupList.Lookup = [lookup]
-    gpos.table.LookupList.LookupCount = 1
-
-    feature = otTables.Feature()
-    feature.FeatureParams = None
-    feature.LookupListIndex = [0]
-    feature.LookupCount = 1
-
-    feature_record = otTables.FeatureRecord()
-    feature_record.FeatureTag = "kern"
-    feature_record.Feature = feature
-
-    gpos.table.FeatureList = otTables.FeatureList()
-    gpos.table.FeatureList.FeatureRecord = [feature_record]
-    gpos.table.FeatureList.FeatureCount = 1
+    _install_layout_table(font, "GPOS", "kern", 2, [subtable])
 
 
 def _install_synthetic_singlepos_feature(
     font,
     feature_tag: str,
     lookup_adjustments: list[dict[str, tuple[int, int]]],
-    placement_attr: str = "XPlacement",
-    advance_attr: str = "XAdvance",
-    value_format: int = 0x0005,
 ) -> None:
-    gpos = newTable("GPOS")
-    font["GPOS"] = gpos
-    gpos.table = otTables.GPOS()
-    gpos.table.Version = 0x00010000
-
-    langsys = otTables.LangSys()
-    langsys.LookupOrder = None
-    langsys.ReqFeatureIndex = 0xFFFF
-    langsys.FeatureIndex = [0]
-    langsys.FeatureCount = 1
-
-    script = otTables.Script()
-    script.DefaultLangSys = langsys
-    script.LangSysRecord = []
-    script.LangSysCount = 0
-
-    script_record = otTables.ScriptRecord()
-    script_record.ScriptTag = "DFLT"
-    script_record.Script = script
-
-    gpos.table.ScriptList = otTables.ScriptList()
-    gpos.table.ScriptList.ScriptRecord = [script_record]
-    gpos.table.ScriptList.ScriptCount = 1
-
     glyph_order = {glyph_name: i for i, glyph_name in enumerate(font.getGlyphOrder())}
-    lookups = []
+    subtables = []
     for adjustments in lookup_adjustments:
         glyphs = sorted(adjustments, key=glyph_order.__getitem__)
-
-        coverage = otTables.Coverage()
-        coverage.glyphs = glyphs
-
         subtable = otTables.SinglePos()
         subtable.Format = 2
-        subtable.Coverage = coverage
-        subtable.ValueFormat = value_format
+        subtable.Coverage = otTables.Coverage()
+        subtable.Coverage.glyphs = glyphs
+        subtable.ValueFormat = 0x0005
         subtable.Value = []
         for glyph_name in glyphs:
-            placement, advance = adjustments[glyph_name]
             value = otTables.ValueRecord()
-            setattr(value, placement_attr, placement)
-            setattr(value, advance_attr, advance)
+            value.XPlacement, value.XAdvance = adjustments[glyph_name]
             subtable.Value.append(value)
         subtable.ValueCount = len(subtable.Value)
+        subtables.append(subtable)
 
-        lookup = otTables.Lookup()
-        lookup.LookupType = 1
-        lookup.LookupFlag = 0
-        lookup.SubTable = [subtable]
-        lookup.SubTableCount = 1
-        lookups.append(lookup)
-
-    gpos.table.LookupList = otTables.LookupList()
-    gpos.table.LookupList.Lookup = lookups
-    gpos.table.LookupList.LookupCount = len(lookups)
-
-    feature = otTables.Feature()
-    feature.FeatureParams = None
-    feature.LookupListIndex = list(range(len(lookups)))
-    feature.LookupCount = len(lookups)
-
-    feature_record = otTables.FeatureRecord()
-    feature_record.FeatureTag = feature_tag
-    feature_record.Feature = feature
-
-    gpos.table.FeatureList = otTables.FeatureList()
-    gpos.table.FeatureList.FeatureRecord = [feature_record]
-    gpos.table.FeatureList.FeatureCount = 1
+    _install_layout_table(font, "GPOS", feature_tag, 1, subtables)
 
 
 def _install_synthetic_gsub_single_subst_feature(
@@ -191,55 +149,9 @@ def _install_synthetic_gsub_single_subst_feature(
     feature_tag: str,
     mapping: dict[str, str],
 ) -> None:
-    gsub = newTable("GSUB")
-    font["GSUB"] = gsub
-    gsub.table = otTables.GSUB()
-    gsub.table.Version = 0x00010000
-
-    langsys = otTables.LangSys()
-    langsys.LookupOrder = None
-    langsys.ReqFeatureIndex = 0
-    langsys.FeatureIndex = [0]
-    langsys.FeatureCount = 1
-
-    script = otTables.Script()
-    script.DefaultLangSys = langsys
-    script.LangSysRecord = []
-    script.LangSysCount = 0
-
-    script_record = otTables.ScriptRecord()
-    script_record.ScriptTag = "DFLT"
-    script_record.Script = script
-
-    gsub.table.ScriptList = otTables.ScriptList()
-    gsub.table.ScriptList.ScriptRecord = [script_record]
-    gsub.table.ScriptList.ScriptCount = 1
-
     subtable = otTables.SingleSubst()
     subtable.mapping = mapping
-
-    lookup = otTables.Lookup()
-    lookup.LookupType = 1
-    lookup.LookupFlag = 0
-    lookup.SubTable = [subtable]
-    lookup.SubTableCount = 1
-
-    gsub.table.LookupList = otTables.LookupList()
-    gsub.table.LookupList.Lookup = [lookup]
-    gsub.table.LookupList.LookupCount = 1
-
-    feature = otTables.Feature()
-    feature.FeatureParams = None
-    feature.LookupListIndex = [0]
-    feature.LookupCount = 1
-
-    feature_record = otTables.FeatureRecord()
-    feature_record.FeatureTag = feature_tag
-    feature_record.Feature = feature
-
-    gsub.table.FeatureList = otTables.FeatureList()
-    gsub.table.FeatureList.FeatureRecord = [feature_record]
-    gsub.table.FeatureList.FeatureCount = 1
+    _install_layout_table(font, "GSUB", feature_tag, 1, [subtable], req_feature_index=0)
 
 
 # ---------------------------------------------------------------------------
@@ -293,41 +205,6 @@ class TestReadPalt:
             "uni3042": (-15, -75),
             "uni3001": (-7, -500),
         }
-
-
-# ---------------------------------------------------------------------------
-# _read_vpal
-# ---------------------------------------------------------------------------
-
-class TestReadVpal:
-    """GPOS vpal extraction."""
-
-    def test_returns_dict_for_noto(self, noto_subset):
-        vpal = _read_vpal(noto_subset)
-        assert isinstance(vpal, dict)
-        assert len(vpal) > 0
-
-    def test_values_are_yplacement_yadvance_pairs(self, noto_subset):
-        vpal = _read_vpal(noto_subset)
-        for gname, value in vpal.items():
-            assert isinstance(gname, str)
-            assert isinstance(value, tuple)
-            assert len(value) == 2
-            yp, ya = value
-            assert isinstance(yp, int)
-            assert isinstance(ya, int)
-
-    def test_middle_dot_has_negative_y_advance(self, noto_subset):
-        vpal = _read_vpal(noto_subset)
-        cmap = noto_subset.getBestCmap()
-        middle_dot_glyph = cmap.get(0x30FB)  # ・
-        if middle_dot_glyph in vpal:
-            yp, ya = vpal[middle_dot_glyph]
-            assert ya < 0, f"Expected negative YAdvance for ・, got {ya}"
-
-    def test_empty_when_no_gpos_vpal(self, synthetic_ttf):
-        # synthetic_ttf has no GPOS at all
-        assert _read_vpal(synthetic_ttf) == {}
 
 
 # ---------------------------------------------------------------------------
@@ -756,7 +633,6 @@ class TestMakeProportional:
         kana_glyph = cmap.get(0x3042)  # あ
         palt = _read_palt(noto_subset)
         if kana_glyph not in palt:
-            import pytest
             pytest.skip("subset palt does not cover U+3042")
 
         before_aw = noto_subset["hmtx"][kana_glyph][0]
@@ -774,133 +650,31 @@ class TestMakeProportional:
             tags = {fr.FeatureTag for fr in gpos.table.FeatureList.FeatureRecord}
             assert not (PROP_FEATURES & tags)
 
-    def test_runtime_palt_skips_baking_and_reinstalls_palt(self, noto_subset):
+    def test_reduced_palt_bakes_only_the_base_fraction(self, noto_subset):
         cmap = noto_subset.getBestCmap()
         punct_glyph = cmap.get(0x3001)  # 、
-        palt = _read_palt(noto_subset)
-        if punct_glyph not in palt:
-            import pytest
-            pytest.skip("subset palt does not cover U+3001")
-
-        before_hmtx = noto_subset["hmtx"][punct_glyph]
-        expected_palt = palt[punct_glyph]
-
-        make_proportional(noto_subset, runtime_palt={punct_glyph})
-
-        after_hmtx = noto_subset["hmtx"][punct_glyph]
-        assert after_hmtx == before_hmtx
-        assert _read_palt(noto_subset) == {punct_glyph: expected_palt}
-
-        tags = {
-            fr.FeatureTag
-            for fr in noto_subset["GPOS"].table.FeatureList.FeatureRecord
-        }
-        assert "palt" in tags
-        assert not ({"vpal", "halt", "vhal", "vkrn"} & tags)
-
-    def test_runtime_palt_can_bake_base_fraction_and_reinstall_residual(self, noto_subset):
-        cmap = noto_subset.getBestCmap()
-        punct_glyph = cmap.get(0x3001)  # 、
-        palt = _read_palt(noto_subset)
-        if punct_glyph not in palt:
-            import pytest
-            pytest.skip("subset palt does not cover U+3001")
-
-        before_aw, before_lsb = noto_subset["hmtx"][punct_glyph]
-        x_placement, x_advance = palt[punct_glyph]
-        base_x_placement = round(x_placement * 0.34)
-        base_x_advance = round(x_advance * 0.34)
-
-        make_proportional(
-            noto_subset,
-            runtime_palt={punct_glyph},
-            runtime_palt_base_scale=0.34,
-        )
-
-        assert noto_subset["hmtx"][punct_glyph] == (
-            before_aw + base_x_advance,
-            before_lsb + base_x_placement,
-        )
-        assert _read_palt(noto_subset) == {
-            punct_glyph: (
-                x_placement - base_x_placement,
-                x_advance - base_x_advance,
-            )
-        }
-
-    def test_runtime_palt_base_fraction_can_skip_live_palt_reinstall(self, noto_subset):
-        cmap = noto_subset.getBestCmap()
-        punct_glyph = cmap.get(0x3001)  # 、
-        palt = _read_palt(noto_subset)
-        if punct_glyph not in palt:
-            pytest.skip("subset palt does not cover U+3001")
-
-        before_aw, before_lsb = noto_subset["hmtx"][punct_glyph]
-        x_placement, x_advance = palt[punct_glyph]
-        base_x_placement = round(x_placement * 0.34)
-        base_x_advance = round(x_advance * 0.34)
-
-        make_proportional(
-            noto_subset,
-            runtime_palt={punct_glyph},
-            runtime_palt_base_scale=0.34,
-            install_runtime_palt=False,
-        )
-
-        assert noto_subset["hmtx"][punct_glyph] == (
-            before_aw + base_x_advance,
-            before_lsb + base_x_placement,
-        )
-        assert _read_palt(noto_subset) == {}
-
-    def test_runtime_palt_and_vpal_can_be_reinstalled_together(self, noto_subset):
-        cmap = noto_subset.getBestCmap()
-        punct_glyph = cmap.get(0x30FB)  # ・
-        palt = _read_palt(noto_subset)
-        vpal = _read_vpal(noto_subset)
-        if punct_glyph not in palt or punct_glyph not in vpal:
-            import pytest
-            pytest.skip("subset does not cover U+30FB palt/vpal")
-
-        before_hmtx = noto_subset["hmtx"][punct_glyph]
-        expected_palt = palt[punct_glyph]
-        expected_vpal = vpal[punct_glyph]
-
-        make_proportional(
-            noto_subset,
-            runtime_palt={punct_glyph},
-            runtime_vpal={punct_glyph},
-        )
-
-        assert noto_subset["hmtx"][punct_glyph] == before_hmtx
-        assert _read_palt(noto_subset) == {punct_glyph: expected_palt}
-        assert _read_vpal(noto_subset) == {punct_glyph: expected_vpal}
-
-        tags = {
-            fr.FeatureTag
-            for fr in noto_subset["GPOS"].table.FeatureList.FeatureRecord
-        }
-        assert {"palt", "vpal"} <= tags
-        assert not ({"halt", "vhal", "vkrn"} & tags)
-
-    def test_runtime_palt_does_not_keep_baked_glyphs_in_feature(self, noto_subset):
-        cmap = noto_subset.getBestCmap()
-        runtime_glyph = cmap.get(0x3001)  # 、
         baked_glyph = cmap.get(0x3042)  # あ
         palt = _read_palt(noto_subset)
-        if runtime_glyph not in palt or baked_glyph not in palt:
-            import pytest
-            pytest.skip("subset palt does not cover runtime and baked glyphs")
+        if punct_glyph not in palt or baked_glyph not in palt:
+            pytest.skip("subset palt does not cover U+3001 / U+3042")
 
+        before_aw, before_lsb = noto_subset["hmtx"][punct_glyph]
         before_baked_aw = noto_subset["hmtx"][baked_glyph][0]
-        _, baked_xa = palt[baked_glyph]
+        x_placement, x_advance = palt[punct_glyph]
 
-        make_proportional(noto_subset, runtime_palt={runtime_glyph})
+        make_proportional(
+            noto_subset,
+            reduced_palt={punct_glyph},
+            reduced_palt_scale=0.34,
+        )
 
-        assert noto_subset["hmtx"][baked_glyph][0] == before_baked_aw + baked_xa
-        after_palt = _read_palt(noto_subset)
-        assert runtime_glyph in after_palt
-        assert baked_glyph not in after_palt
+        assert noto_subset["hmtx"][punct_glyph] == (
+            before_aw + round(x_advance * 0.34),
+            before_lsb + round(x_placement * 0.34),
+        )
+        assert noto_subset["hmtx"][baked_glyph][0] == before_baked_aw + palt[baked_glyph][1]
+        # The residual is installed later as ss09, never as live palt.
+        assert _read_palt(noto_subset) == {}
 
     def test_palt_override_takes_precedence(self, noto_subset):
         cmap = noto_subset.getBestCmap()
@@ -916,23 +690,7 @@ class TestMakeProportional:
         after_aw = noto_subset["hmtx"][kana_glyph][0]
         assert after_aw == before_aw - 100
 
-    def test_reduced_palt_applies_fraction(self, noto_subset):
-        cmap = noto_subset.getBestCmap()
-        kana_glyph = cmap.get(0x3042)
-        before_aw = noto_subset["hmtx"][kana_glyph][0]
-
-        # Override with -90 advance, reduced scale 1/3 → expected -30
-        make_proportional(
-            noto_subset,
-            palt_override={kana_glyph: (0, -90)},
-            reduced_palt={kana_glyph},
-            reduced_palt_scale=1 / 3,
-        )
-
-        after_aw = noto_subset["hmtx"][kana_glyph][0]
-        assert after_aw == before_aw - 30
-
-    def test_non_palt_glyph_keeps_metrics_without_squeeze(self, noto_subset):
+    def test_non_palt_glyph_keeps_metrics(self, noto_subset):
         palt = _read_palt(noto_subset)
         cmap = noto_subset.getBestCmap()
         candidate = None
@@ -942,7 +700,6 @@ class TestMakeProportional:
                 candidate = gname
                 break
         if candidate is None:
-            import pytest
             pytest.skip("no non-palt glyph available")
 
         before = noto_subset["hmtx"][candidate]
@@ -951,47 +708,10 @@ class TestMakeProportional:
 
         assert noto_subset["hmtx"][candidate] == before
 
-    def test_squeeze_sb_narrows_non_palt_glyph(self, noto_subset):
-        # Pick a glyph that has no palt entry; verify sidebearings shrink.
-        palt = _read_palt(noto_subset)
-        cmap = noto_subset.getBestCmap()
-        candidate = None
-        for cp in (0x0041, 0x0061):  # A, a
-            gname = cmap.get(cp)
-            if gname and gname not in palt:
-                glyph = noto_subset["glyf"][gname]
-                if glyph.numberOfContours > 0 and getattr(glyph, "xMin", None) is not None:
-                    candidate = gname
-                    break
-        if candidate is None:
-            import pytest
-            pytest.skip("no non-palt glyph available")
-
-        before_aw, before_lsb = noto_subset["hmtx"][candidate]
-        glyph = noto_subset["glyf"][candidate]
-        bbox_w = glyph.xMax - glyph.xMin
-        before_rsb = before_aw - before_lsb - bbox_w
-
-        # Half the sidebearings (squeeze_sb_scale = 0.5)
-        make_proportional(
-            noto_subset,
-            squeeze_sb={candidate},
-            squeeze_sb_scale=0.5,
-        )
-
-        after_aw, after_lsb = noto_subset["hmtx"][candidate]
-        # LSB removal: round(lsb * 0.5); RSB removal: round(rsb * 0.5)
-        expected_lsb_remove = round(before_lsb * 0.5)
-        expected_rsb_remove = round(before_rsb * 0.5)
-        assert after_lsb == before_lsb - expected_lsb_remove
-        assert after_aw == before_aw - expected_lsb_remove - expected_rsb_remove
-
     def test_rejects_cff_font(self):
         # The pipeline only knows how to mutate glyf — CFF outlines should
         # fail loudly rather than silently produce an inconsistent font.
-        from fontTools.ttLib import TTFont
         empty = TTFont()  # has no glyf
-        import pytest
         with pytest.raises(ValueError, match="TrueType-outline"):
             make_proportional(empty)
 

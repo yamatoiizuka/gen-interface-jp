@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Convert a CJK font to proportional metrics using its palt GPOS feature.
 
@@ -10,22 +9,17 @@ Japanese composer, browser fallbacks, anything that treats CJK as
 monospaced for layout) miss those adjustments and lay the text out at
 full-width spacing.
 
-This module bakes most ``palt`` values into the static hmtx so the font
-reads as proportional everywhere. A caller may keep a small glyph set as a
-live runtime ``palt`` / ``vpal`` feature; palt glyphs can either stay
-unbaked or split into a baked base fraction plus a live residual feature.
-Fresh lookups are installed after the redundant proportional features are
-removed. Glyphs not covered by ``palt`` keep their original metrics —
+This module bakes ``palt`` values into the static hmtx so the font reads as
+proportional everywhere. A caller may bake only a fraction of ``palt`` for a
+small glyph set; the build exposes the remaining residual through the
+``ss09`` stylistic set (and synthesized ``halt`` / ``vhal``) installed by the
+helpers below. Glyphs not covered by ``palt`` keep their original metrics —
 nothing is forced.
-
-Usage:
-    python3 -m font.proportional INPUT.ttf OUTPUT.ttf
 """
 
 from __future__ import annotations
 
 import copy
-import sys
 from fontTools.ttLib import TTFont, newTable
 from fontTools.ttLib.tables import otTables
 
@@ -66,172 +60,60 @@ def _scale_position_adjustment(
 
 def make_proportional(
     font: TTFont,
+    palt_override: dict[str, tuple[int, int]] | None = None,
     reduced_palt: set[str] | None = None,
     reduced_palt_scale: float = 1 / 3,
-    squeeze_sb: set[str] | None = None,
-    squeeze_sb_scale: float | None = None,
-    palt_override: dict[str, tuple[int, int]] | None = None,
-    runtime_palt: set[str] | None = None,
-    runtime_palt_base_scale: float = 0.0,
-    install_runtime_palt: bool = True,
-    vpal_override: dict[str, tuple[int, int]] | None = None,
-    runtime_vpal: set[str] | None = None,
 ) -> None:
     """Bake palt adjustments into hmtx in place, then strip prop features.
 
-    Three groups of glyphs:
-
-    - **Full palt**: glyphs in ``palt_adjustments`` that aren't called out in
+    - **Full palt**: glyphs in the palt data that aren't called out in
       ``reduced_palt``. The XPlacement / XAdvance from palt is applied at
-      full strength — outline shifts left by XPlacement, advance grows
-      by XAdvance (negative = narrower).
-    - **Reduced palt** (``reduced_palt``): same glyphs as palt but the
-      adjustment is scaled by ``reduced_palt_scale`` (default 1/3).
-      Used in this project for punctuation, where full palt feels too
-      tight when set against kana that already shrank.
-    - **Squeeze SB** (``squeeze_sb``): glyphs *without* palt entries that
-      should still narrow proportionally. Their LSB and RSB each shrink
-      by ``(1 - squeeze_sb_scale)`` so the rhythm of the squeeze stays
-      consistent with reduced-palt punctuation.
+      full strength — outline shifts by XPlacement, advance grows by
+      XAdvance (negative = narrower).
+    - **Reduced palt** (``reduced_palt``): the adjustment is scaled by
+      ``reduced_palt_scale`` before baking. The build uses this for ss09
+      yakumono, whose residual delta is installed later as an alternate.
 
     ``palt_override`` lets the caller supply palt values from elsewhere
     (e.g. the variable-font source) when the font's own GPOS palt has
     been corrupted by variable instantiation. Variable→static baking can
     leave palt ValueRecords with zeroed XPlacement/XAdvance pairs.
 
-    ``runtime_palt`` leaves selected palt-covered glyphs available as a live
-    ``palt`` feature. By default those glyphs are not baked. When
-    ``runtime_palt_base_scale`` is non-zero, that fraction is baked into the
-    base hmtx and only the remaining delta is reinstalled as live ``palt``.
-    This lets selected yakumono stay somewhat tight when ``palt`` is disabled
-    while preserving the full palt result when it is enabled.
-    Callers that migrate the residual elsewhere can set
-    ``install_runtime_palt=False`` while keeping the base bake behavior.
-
-    ``vpal_override`` / ``runtime_vpal`` mirror that runtime feature path
-    for vertical proportional metrics. ``vpal`` is not baked into hmtx; when
-    requested, selected records are preserved as a live GPOS feature after
-    the original proportional features are stripped.
-
     Only TrueType-outlined fonts are supported — palt baking writes back
     to ``glyf``, not to CFF.
     """
     if "glyf" not in font:
         raise ValueError("Only TrueType-outline fonts are supported")
+    if not 0 <= reduced_palt_scale <= 1:
+        raise ValueError("reduced_palt_scale must be between 0 and 1")
 
-    if squeeze_sb_scale is None:
-        squeeze_sb_scale = reduced_palt_scale
-    if not 0 <= runtime_palt_base_scale <= 1:
-        raise ValueError("runtime_palt_base_scale must be between 0 and 1")
-
-    runtime_palt = runtime_palt or set()
-    runtime_vpal = runtime_vpal or set()
-
-    # Extract palt adjustments before removing features
     palt_adjustments = palt_override if palt_override is not None else _read_palt(font)
-    runtime_palt_adjustments = {}
-    vpal_adjustments = vpal_override if vpal_override is not None else _read_vpal(font)
-    runtime_vpal_adjustments = {
-        glyph_name: value
-        for glyph_name, value in vpal_adjustments.items()
-        if glyph_name in runtime_vpal
-    }
-
+    reduced_palt = reduced_palt or set()
     glyf = font["glyf"]
     hmtx = font["hmtx"]
 
-    # ── Apply palt adjustments ──
-    for glyph_name, (x_placement, x_advance) in palt_adjustments.items():
-        if glyph_name in runtime_palt:
-            if runtime_palt_base_scale == 0:
-                runtime_palt_adjustments[glyph_name] = (x_placement, x_advance)
-                continue
-            if glyph_name not in hmtx.metrics:
-                runtime_palt_adjustments[glyph_name] = (x_placement, x_advance)
-                continue
-            base_x_placement, base_x_advance = _scale_position_adjustment(
-                (x_placement, x_advance),
-                runtime_palt_base_scale,
-            )
-            runtime_palt_adjustments[glyph_name] = (
-                x_placement - base_x_placement,
-                x_advance - base_x_advance,
-            )
-            x_placement = base_x_placement
-            x_advance = base_x_advance
-        elif glyph_name not in hmtx.metrics:
+    for glyph_name, adjustment in palt_adjustments.items():
+        if glyph_name not in hmtx.metrics:
             continue
+        if glyph_name in reduced_palt:
+            adjustment = _scale_position_adjustment(adjustment, reduced_palt_scale)
+        x_placement, x_advance = adjustment
 
-        # Reduced palt: apply a fraction of the adjustment
-        if glyph_name not in runtime_palt and reduced_palt and glyph_name in reduced_palt:
-            x_placement, x_advance = _scale_position_adjustment(
-                (x_placement, x_advance),
-                reduced_palt_scale,
-            )
-
-        aw, lsb = hmtx[glyph_name]
-
-        # x_placement: shift the glyph origin (negative = shift left)
-        # x_advance: adjust the advance width (negative = narrower)
-        new_lsb = lsb + x_placement
-        new_aw = aw + x_advance
-
-        # Shift outlines by x_placement
+        # Shift outlines by x_placement (negative = shift left).
         if x_placement != 0 and glyph_name in glyf:
             glyph = glyf[glyph_name]
             if glyph.numberOfContours != 0 and hasattr(glyph, "xMin") and glyph.xMin is not None:
                 _shift_glyph_x(glyph, x_placement)
 
-        hmtx[glyph_name] = (new_aw, new_lsb)
+        aw, lsb = hmtx[glyph_name]
+        hmtx[glyph_name] = (aw + x_advance, lsb + x_placement)
 
-    # ── Squeeze sidebearings for non-palt glyphs ──
-    if squeeze_sb:
-        for glyph_name in squeeze_sb:
-            if glyph_name in palt_adjustments:
-                continue  # already handled above
-            if glyph_name not in hmtx.metrics:
-                continue
-            if glyph_name not in glyf:
-                continue
-
-            glyph = glyf[glyph_name]
-            if glyph.numberOfContours == 0:
-                continue
-            if not hasattr(glyph, "xMin") or glyph.xMin is None:
-                continue
-
-            aw, lsb = hmtx[glyph_name]
-            bbox_w = glyph.xMax - glyph.xMin
-            rsb = aw - lsb - bbox_w
-
-            # How much to remove: (1 - scale) of each sidebearing
-            cut = 1 - squeeze_sb_scale
-            lsb_remove = round(lsb * cut)
-            rsb_remove = round(rsb * cut)
-
-            if lsb_remove == 0 and rsb_remove == 0:
-                continue
-
-            # Shift outlines left by lsb_remove
-            if lsb_remove != 0:
-                _shift_glyph_x(glyph, -lsb_remove)
-
-            new_lsb = lsb - lsb_remove
-            new_aw = aw - lsb_remove - rsb_remove
-            hmtx[glyph_name] = (new_aw, new_lsb)
-
-    # Remove proportional-metric GPOS features plus vertical kerning, then
-    # install minimal live palt/vpal lookups for glyphs intentionally kept at
-    # runtime.
+    # Remove proportional-metric GPOS features plus vertical kerning.
     _remove_prop_features(font)
-    if install_runtime_palt and runtime_palt_adjustments:
-        _install_palt_feature(font, runtime_palt_adjustments)
-    if runtime_vpal_adjustments:
-        _install_vpal_feature(font, runtime_vpal_adjustments)
 
 
 # ---------------------------------------------------------------------------
-# GPOS palt/vpal extraction
+# GPOS SinglePos extraction
 # ---------------------------------------------------------------------------
 
 def _read_palt(font: TTFont) -> dict[str, tuple[int, int]]:
@@ -246,16 +128,6 @@ def _read_palt(font: TTFont) -> dict[str, tuple[int, int]]:
     empty dict — callers treat the absence of palt as "leave hmtx alone".
     """
     return _read_single_pos_feature(font, "palt", "XPlacement", "XAdvance")
-
-
-def _read_vpal(font: TTFont) -> dict[str, tuple[int, int]]:
-    """Walk GPOS vpal lookups and return ``{glyph_name: (YPlacement, YAdvance)}``.
-
-    Mirrors :func:`_read_palt`, but reads vertical placement / advance
-    records. Missing GPOS, missing FeatureList, or no vpal records all
-    return an empty dict.
-    """
-    return _read_single_pos_feature(font, "vpal", "YPlacement", "YAdvance")
 
 
 def _read_single_pos_feature(
@@ -463,27 +335,6 @@ def _prune_unreferenced_lookups(table) -> None:
         feature.LookupCount = len(feature.LookupListIndex)
 
 
-def _install_palt_feature(
-    font: TTFont,
-    adjustments: dict[str, tuple[int, int]],
-) -> None:
-    """Install a fresh SinglePos palt feature for ``adjustments``.
-
-    The build pipeline reads palt values from the original variable font
-    because instantiated statics can carry stale ValueRecords. Rebuilding the
-    palt feature from that canonical data is simpler and safer than trying to
-    preserve and prune the original lookup tree.
-    """
-    _install_single_pos_feature(
-        font,
-        "palt",
-        adjustments,
-        "XPlacement",
-        "XAdvance",
-        0x0001 | 0x0004,
-    )
-
-
 def _install_halt_feature(
     font: TTFont,
     adjustments: dict[str, tuple[int, int]],
@@ -520,21 +371,6 @@ def _install_vhal_feature(
     _install_single_pos_feature(
         font,
         "vhal",
-        adjustments,
-        "YPlacement",
-        "YAdvance",
-        0x0002 | 0x0008,
-    )
-
-
-def _install_vpal_feature(
-    font: TTFont,
-    adjustments: dict[str, tuple[int, int]],
-) -> None:
-    """Install a fresh SinglePos vpal feature for ``adjustments``."""
-    _install_single_pos_feature(
-        font,
-        "vpal",
         adjustments,
         "YPlacement",
         "YAdvance",
@@ -1048,20 +884,3 @@ def _append_feature_index(langsys, feature_index: int) -> None:
         feature_indices.append(feature_index)
     langsys.FeatureIndex = feature_indices
     langsys.FeatureCount = len(feature_indices)
-
-
-def main():
-    if len(sys.argv) != 3:
-        print(f"Usage: {sys.argv[0]} INPUT.ttf OUTPUT.ttf")
-        sys.exit(1)
-
-    input_path, output_path = sys.argv[1], sys.argv[2]
-
-    font = TTFont(input_path)
-    make_proportional(font)
-    font.save(output_path)
-    print(f"Proportional font saved to {output_path}")
-
-
-if __name__ == "__main__":
-    main()
