@@ -18,6 +18,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SRC = str(ROOT / "src")
 TERMINATE_TIMEOUT = 10.0
+CANCEL_SIGNALS = (signal.SIGINT, signal.SIGTERM)
+
+# State of the outermost active ``deferred_signals`` block, if any.
+_deferred: dict[str, int | None] | None = None
 
 
 def child_env() -> dict[str, str]:
@@ -32,24 +36,44 @@ def child_env() -> dict[str, str]:
 
 
 @contextmanager
-def _sigterm_as_exit():
-    """Turn SIGTERM into SystemExit so cleanup runs before the parent exits.
+def deferred_signals():
+    """Record SIGINT / SIGTERM inside the block and re-raise them on exit.
 
     Python's default SIGTERM action exits without unwinding ``finally``
-    blocks, which would orphan the children and leave their temp files.
+    blocks, and SIGINT can raise ``KeyboardInterrupt`` between spawning a
+    child and tracking it. Deferring both lets callers notice cancellation at
+    safe points (``state["signum"]``), finish cleanup, and only then exit:
+    ``KeyboardInterrupt`` for SIGINT, ``SystemExit(128 + signum)`` otherwise.
+    Nested blocks share the outermost block's state. Off the main thread,
+    signals cannot be handled and are left alone.
     """
+    global _deferred
+    if _deferred is not None:
+        yield _deferred
+        return
     if threading.current_thread() is not threading.main_thread():
-        yield
+        yield {"signum": None}
         return
 
-    def handle(signum, _frame):
-        raise SystemExit(128 + signum)
+    state: dict[str, int | None] = {"signum": None}
 
-    previous = signal.signal(signal.SIGTERM, handle)
+    def record(signum, _frame):
+        if state["signum"] is None:
+            state["signum"] = signum
+
+    previous = {signum: signal.signal(signum, record) for signum in CANCEL_SIGNALS}
+    _deferred = state
     try:
-        yield
+        yield state
     finally:
-        signal.signal(signal.SIGTERM, previous)
+        _deferred = None
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+
+    if state["signum"] == signal.SIGINT:
+        raise KeyboardInterrupt
+    if state["signum"] is not None:
+        raise SystemExit(128 + state["signum"])
 
 
 def _stop(processes: list[subprocess.Popen]) -> None:
@@ -71,15 +95,19 @@ def run_parallel(
     jobs: int,
     labels: list[str] | None = None,
 ) -> None:
-    """Run *commands* with at most *jobs* children; stop all on first failure."""
+    """Run *commands* with at most *jobs* children; stop all on first failure.
+
+    On a child failure, SIGINT, or SIGTERM every started child is terminated
+    and reaped before the error or signal propagates.
+    """
     labels = labels or [" ".join(command) for command in commands]
     pending = list(zip(commands, labels))
     active: list[tuple[list[str], str, subprocess.Popen]] = []
     env = child_env()
 
-    with _sigterm_as_exit():
+    with deferred_signals() as cancel:
         try:
-            _run(pending, active, jobs, env)
+            _run(pending, active, jobs, env, cancel)
         finally:
             _stop([process for _command, _label, process in active])
 
@@ -89,9 +117,10 @@ def _run(
     active: list[tuple[list[str], str, subprocess.Popen]],
     jobs: int,
     env: dict[str, str],
+    cancel: dict[str, int | None],
 ) -> None:
-    while pending or active:
-        while pending and len(active) < jobs:
+    while (pending or active) and cancel["signum"] is None:
+        while pending and len(active) < jobs and cancel["signum"] is None:
             command, label = pending.pop(0)
             print(f"  -> starting {label}", flush=True)
             active.append((command, label, subprocess.Popen(command, cwd=ROOT, env=env)))
@@ -106,5 +135,5 @@ def _run(
                 raise subprocess.CalledProcessError(returncode, command)
             print(f"  -> done {label}", flush=True)
 
-        if active:
+        if active and cancel["signum"] is None:
             time.sleep(0.2)

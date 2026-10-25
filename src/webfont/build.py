@@ -34,7 +34,7 @@ from typing import Iterable
 import brotli
 from fontTools import subset
 from fontTools.ttLib import TTFont
-from parallel import run_parallel
+from parallel import deferred_signals, run_parallel
 
 logging.getLogger("fontTools.ttLib.tables.otTables").setLevel(logging.ERROR)
 
@@ -381,7 +381,9 @@ def _run_subset_tasks(tasks: list[SubsetTask], jobs: int, out_dir: Path) -> dict
             build_woff2_subset(Path(src), Path(out), codepoints)
             print(f"[{index:04d}/{len(tasks):04d}] {Path(out).relative_to(out_dir)}", flush=True)
     else:
-        with tempfile.TemporaryDirectory(prefix="webfont-tasks-") as tmp:
+        # Defer SIGINT/SIGTERM across the whole temp-dir lifetime so a cancel
+        # during shard serialization or cleanup still removes the task files.
+        with deferred_signals(), tempfile.TemporaryDirectory(prefix="webfont-tasks-") as tmp:
             commands = []
             for shard in range(jobs):
                 tasks_path = Path(tmp) / f"{shard:02d}.json"
