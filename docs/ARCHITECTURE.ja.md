@@ -628,7 +628,7 @@ CI: `.github/workflows/pages.yml` は pull request と `main` への push の
 
 ### Python
 
-- `ofl-font-baker` (>= 0.4.10) — コンポジットフォントマージエンジン。
+- `ofl-font-baker` (>= 0.4.11) — コンポジットフォントマージエンジン。
   `metadataMode` で base / sub の identity を継承する。Stage 1 (bake) と
   Stage 3 (merge) を駆動。0.4.0 で `subFont.excludeCodepoints` と
   glyph-name collision rename が追加され、merge 段で日本語慣習記号を
@@ -647,6 +647,11 @@ CI: `.github/workflows/pages.yml` は pull request と `main` への push の
 - `pytest` (>= 9.1.1) — テストランナー。
 - `uharfbuzz` (>= 0.57.0) — shaping テストを skip せず実行するための開発依存。
 
+0.4.11 は性能改善リリース: merge 後のフォントを 1 回だけ保存し
+(hb.repack の kern フォールバック判定は GPOS のみをコンパイルして確認)、
+Latin lookup の重複 deep copy を省き、glyph order の二乗オーダーのループを
+解消した。0.4.11 でビルドした TTF 16 個と WOFF2 サブセット 2048 個は
+0.4.10 のビルドとテーブル単位で同一で、`make font` は約 58 秒から約 45 秒に短縮した。
 0.4.10 は修正済みの Brotli 1.2.1 以降を必須とする。フォント生成コードは 0.4.9 と同一。
 0.4.9 ではパッケージ出力先の安全性検査と、一時ディレクトリで生成後に置き換え・失敗時に復元する処理が追加され、既存の出力を保護する。
 

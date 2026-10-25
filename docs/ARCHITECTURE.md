@@ -644,7 +644,7 @@ flow.
 
 ### Python
 
-- `ofl-font-baker` (>= 0.4.10) — Composite font merge engine. Inherits
+- `ofl-font-baker` (>= 0.4.11) — Composite font merge engine. Inherits
   base/sub identity records via `metadataMode`. Drives Stage 1 (bake)
   and Stage 3 (merge) of the build pipeline. 0.4.0 added
   `subFont.excludeCodepoints` and glyph-name collision rename, used by
@@ -665,6 +665,11 @@ flow.
 - `pytest` (>= 9.1.1) — Test runner.
 - `uharfbuzz` (>= 0.57.0) — Development dependency so shaping tests run rather than skip.
 
+Version 0.4.11 is a performance release: it saves the merged font once
+(probing only GPOS for the hb.repack kern fallback), skips a redundant deep
+copy of Latin lookups, and removes quadratic glyph-order loops. All 16 TTFs
+and 2048 WOFF2 subsets built with it are table-identical to 0.4.10 builds,
+and `make font` dropped from ~58 s to ~45 s.
 Version 0.4.10 requires patched Brotli 1.2.1 or later; the font generation code is unchanged from 0.4.9.
 Version 0.4.9 adds guarded package export destinations and staged replacement with rollback to preserve existing exports on failure.
 
