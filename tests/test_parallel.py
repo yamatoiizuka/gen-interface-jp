@@ -185,7 +185,35 @@ def test_block_exception_propagates_without_signal():
             raise ValueError("build failed")
 
 
-def test_signal_during_handler_restore_cannot_strand_sigterm(monkeypatch):
+@pytest.fixture
+def idle_thread():
+    """A running thread that leaves SIGINT unblocked, as a real worker would."""
+    stop = threading.Event()
+    thread = threading.Thread(target=stop.wait)
+    thread.start()
+    yield thread
+    stop.set()
+    thread.join()
+
+
+def _interrupt_via(thread: threading.Thread, signum: int = signal.SIGINT) -> None:
+    """Send *signum* through *thread* and wait until the main thread handles it.
+
+    The handler raises from inside this wait, i.e. at the exact point of the
+    handler swap that called us.
+    """
+    signal.pthread_kill(thread.ident, signum)
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        time.sleep(0.01)
+    raise AssertionError(f"signal {signum} was not handled")
+
+
+@pytest.mark.parametrize("via_worker_thread", [False, True])
+def test_signal_during_handler_restore_cannot_strand_sigterm(
+    monkeypatch, request, via_worker_thread
+):
+    worker = request.getfixturevalue("idle_thread") if via_worker_thread else None
     before = {sig: signal.getsignal(sig) for sig in parallel.CANCEL_SIGNALS}
     real_signal = signal.signal
     fired = False
@@ -195,7 +223,12 @@ def test_signal_during_handler_restore_cannot_strand_sigterm(monkeypatch):
         previous = real_signal(signum, handler)
         if signum == signal.SIGINT and handler is before[signal.SIGINT] and not fired:
             fired = True  # SIGTERM is not restored yet at this point
-            os.kill(os.getpid(), signal.SIGINT)
+            if worker is not None:
+                # Bypasses the main thread's signal mask; Python still runs
+                # the handler on the main thread.
+                _interrupt_via(worker)
+            else:
+                os.kill(os.getpid(), signal.SIGINT)
         return previous
 
     monkeypatch.setattr(parallel.signal, "signal", restore_then_interrupt)
@@ -206,6 +239,42 @@ def test_signal_during_handler_restore_cannot_strand_sigterm(monkeypatch):
 
     assert fired
     assert {sig: signal.getsignal(sig) for sig in parallel.CANCEL_SIGNALS} == before
+    assert parallel._deferred is None
+
+
+def test_interrupted_setup_rolls_back_every_handler(monkeypatch, idle_thread):
+    def original_sigterm(signum, _frame):
+        raise SystemExit(99)
+
+    previous_sigterm = signal.signal(signal.SIGTERM, original_sigterm)
+    try:
+        before = {sig: signal.getsignal(sig) for sig in parallel.CANCEL_SIGNALS}
+        real_signal = signal.signal
+        fired = False
+
+        def install_then_interrupt(signum, handler):
+            nonlocal fired
+            previous = real_signal(signum, handler)
+            if signum == signal.SIGINT and handler is not before[signal.SIGINT] and not fired:
+                fired = True  # SIGINT is replaced, SIGTERM still has its original handler
+                _interrupt_via(idle_thread, signal.SIGTERM)
+            return previous
+
+        monkeypatch.setattr(parallel.signal, "signal", install_then_interrupt)
+        entered = False
+
+        with pytest.raises(SystemExit) as excinfo:
+            with deferred_signals():
+                entered = True
+
+        monkeypatch.undo()
+        assert excinfo.value.code == 99
+        assert fired
+        assert not entered
+        assert {sig: signal.getsignal(sig) for sig in parallel.CANCEL_SIGNALS} == before
+        assert parallel._deferred is None
+    finally:
+        signal.signal(signal.SIGTERM, previous_sigterm)
 
 
 def test_other_threads_do_not_share_main_thread_state():

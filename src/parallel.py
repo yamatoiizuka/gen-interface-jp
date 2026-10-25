@@ -37,10 +37,12 @@ def child_env() -> dict[str, str]:
 
 @contextmanager
 def _signals_blocked():
-    """Hold SIGINT / SIGTERM pending while handlers are swapped (POSIX).
+    """Hold SIGINT / SIGTERM pending on this thread while handlers are swapped.
 
-    A blocked signal is delivered when the mask is restored, so it reaches
-    either the old or the new handler set — never a half-swapped one.
+    This only narrows the window: the mask is per thread, another thread can
+    still take the signal (Python then runs the handler on the main thread),
+    and some platforms lack ``pthread_sigmask``. ``_set_handlers`` is what
+    guarantees a complete swap.
     """
     if not hasattr(signal, "pthread_sigmask"):
         yield
@@ -52,9 +54,23 @@ def _signals_blocked():
         signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
 
 
-def _restore_handlers(previous: dict[int, object]) -> None:
-    for signum, handler in previous.items():
-        signal.signal(signum, handler)
+def _set_handlers(handlers: dict[int, object]) -> None:
+    """Install every handler, even if a signal handler raises midway.
+
+    A handler that fires between two installs (e.g. the original SIGINT
+    handler raising ``KeyboardInterrupt``) is retried rather than aborting the
+    swap; the first such interruption is re-raised once all handlers are set.
+    """
+    interruption: BaseException | None = None
+    for signum, handler in handlers.items():
+        while True:
+            try:
+                signal.signal(signum, handler)
+                break
+            except (KeyboardInterrupt, SystemExit) as exc:
+                interruption = interruption or exc
+    if interruption is not None:
+        raise interruption
 
 
 def _cancellation(signum: int | None) -> BaseException | None:
@@ -93,13 +109,12 @@ def deferred_signals():
         if state["signum"] is None:
             state["signum"] = signum
 
-    previous: dict[int, object] = {}
+    previous = {signum: signal.getsignal(signum) for signum in CANCEL_SIGNALS}
     with _signals_blocked():
         try:
-            for signum in CANCEL_SIGNALS:
-                previous[signum] = signal.signal(signum, record)
+            _set_handlers(dict.fromkeys(CANCEL_SIGNALS, record))
         except BaseException:
-            _restore_handlers(previous)
+            _set_handlers(previous)
             raise
         _deferred = state
 
@@ -111,7 +126,7 @@ def deferred_signals():
     finally:
         with _signals_blocked():
             _deferred = None
-            _restore_handlers(previous)
+            _set_handlers(previous)
 
     cancellation = _cancellation(state["signum"])
     if cancellation is not None:
