@@ -623,8 +623,9 @@ Tests live under `tests/`, split by surface:
 | `python3 -m font.verify_edge_instances` | Verify built Thin / ExtraBold edge outputs |
 | `python3 -m pytest` | Run the test suite |
 
-CI: `.github/workflows/pages.yml` deploys the demo site to GitHub Pages
-on every push to `main`. Release packaging is run locally — see
+CI: `.github/workflows/pages.yml` runs the Python tests and builds the demo
+site on every pull request and push to `main`; only pushes to `main` (or a
+manual dispatch) upload the artifact and deploy it to GitHub Pages. Release packaging is run locally — see
 `src/release/README.md` for the `make release` + `gh release upload`
 flow.
 

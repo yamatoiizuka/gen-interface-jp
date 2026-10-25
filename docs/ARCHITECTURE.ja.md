@@ -606,8 +606,9 @@ PYTHONPATH=src python3 -m pytest        # 全テスト (~10 秒)
 | `python3 -m font.verify_edge_instances` | ビルド済み Thin / ExtraBold edge output を検証 |
 | `python3 -m pytest` | テスト実行 |
 
-CI: `.github/workflows/pages.yml` が `main` への push ごとにデモサイトを
-GitHub Pages にデプロイ。リリースパッケージングはローカル実行に統一 —
+CI: `.github/workflows/pages.yml` は pull request と `main` への push の
+たびに Python テストとデモサイトのビルドを実行し、`main` への push (または
+手動実行) のときだけ artifact をアップロードして GitHub Pages にデプロイする。リリースパッケージングはローカル実行に統一 —
 詳細は `src/release/README.md` の `make release` + `gh release upload`
 の手順を参照。
 
